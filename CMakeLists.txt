@@ -53,6 +53,9 @@ else()
         $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
         $<$<COMPILE_LANGUAGE:CXX>:-Wconversion>
         $<$<COMPILE_LANGUAGE:CXX>:-Werror>
+
+        # TODO: fix these
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-return-type-c-linkage> # namespaces are not a thing in C
     )
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_definitions(nv_cluster_builder PRIVATE

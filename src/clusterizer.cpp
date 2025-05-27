@@ -29,6 +29,9 @@
 #include <vector>
 #define PRINT_PERF 0
 
+// Workaround for libc++ std::execution
+#include <parallel_execution_libcxx.hpp>
+
 // Scoped profiler for quick and coarse results
 // https://stackoverflow.com/questions/31391914/timing-in-an-elegant-way-in-c
 #if PRINT_PERF

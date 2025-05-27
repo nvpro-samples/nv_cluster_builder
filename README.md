@@ -278,3 +278,5 @@ normal similarity or a balance of multiple attributes.
 
 Badly chosen weights can result in degenerate solutions where recursive
 bisection splits off single leaves. This is both slow and rarely desirable.
+
+Parallel execution is only supported with libstdc++ and MSVC STL, not libc++.
