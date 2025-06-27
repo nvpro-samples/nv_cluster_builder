@@ -16,31 +16,54 @@
 # SPDX-License-Identifier: Apache-2.0
 
 cmake_minimum_required(VERSION 3.20)
-project(nv_cluster_builder)
+project(nv_cluster_builder VERSION 2.0)
 
-option(NVCLUSTER_MULTITHREADED "Use parallel algorithms to generate clusters." ON)
+set(SOURCES
+  src/clusterizer.cpp
+  src/connections.cpp
+  src/nvcluster.cpp
+)
+file(GLOB HEADERS_INTERNAL
+  src/*.hpp
+)
+file(GLOB HEADERS_PUBLIC
+  include/nvcluster/*.h
+  include/nvcluster/*.hpp
+)
 
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_LIST_DIR}/_install" CACHE PATH "Output location for the INSTALL target" FORCE)
-endif()
+source_group("public_include" FILES ${HEADERS_PUBLIC})
+source_group("source" FILES ${SOURCES} ${HEADERS_INTERNAL})
 
-file(GLOB SOURCES src/*.h src/*.hpp src/*.c src/*.cpp)
-file(GLOB HEADERS include/nvcluster/*.h include/nvcluster/*.hpp)
+# Optionally build as a shared library
+include(CMakeDependentOption)
+cmake_dependent_option(
+  NVCLUSTER_BUILDER_SHARED  # option variable
+  "Build shared library"    # description
+  OFF                       # default value if exposed; user can override
+  "NOT BUILD_SHARED_LIBS"   # condition to expose option
+  ON                        # value if not exposed; user can't override
+)
 
-
-source_group("public_include" FILES ${HEADERS})
-source_group("source" FILES ${SOURCES})
-
-add_library(nv_cluster_builder ${SOURCES} ${HEADERS})
+if (NVCLUSTER_BUILDER_SHARED)
+  set(CMAKE_C_VISIBILITY_PRESET hidden)
+  set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+  set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
+  add_library(nv_cluster_builder SHARED ${SOURCES} ${HEADERS_INTERNAL} ${HEADERS_PUBLIC})
+  target_compile_definitions(nv_cluster_builder PUBLIC NVCLUSTER_BUILDER_SHARED)
+else()
+  add_library(nv_cluster_builder STATIC ${SOURCES} ${HEADERS_INTERNAL} ${HEADERS_PUBLIC})
+endif ()
 target_compile_features(nv_cluster_builder PUBLIC cxx_std_20)
 target_include_directories(nv_cluster_builder PUBLIC include)
 target_include_directories(nv_cluster_builder PRIVATE src)
+target_compile_definitions(nv_cluster_builder PRIVATE NVCLUSTER_BUILDER_COMPILING)
 
 # All the warnings. Branch on COMPILE_LANGUAGE to avoid passing unknowns to nvcc
 if(MSVC)
     target_compile_options(nv_cluster_builder PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/W4>
-        #$<$<COMPILE_LANGUAGE:CXX>:/WX>
+        $<$<COMPILE_LANGUAGE:CXX>:/WX>
+        $<$<COMPILE_LANGUAGE:CXX>:/wd4127> # 'conditional expression is constant' unhelpful when mixing c.t. and dynamic
     )
     target_compile_definitions(nv_cluster_builder PRIVATE WIN32_LEAN_AND_MEAN=1 NOMINMAX)
 else()
@@ -53,9 +76,6 @@ else()
         $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
         $<$<COMPILE_LANGUAGE:CXX>:-Wconversion>
         $<$<COMPILE_LANGUAGE:CXX>:-Werror>
-
-        # TODO: fix these
-        $<$<COMPILE_LANGUAGE:CXX>:-Wno-return-type-c-linkage> # namespaces are not a thing in C
     )
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_definitions(nv_cluster_builder PRIVATE
@@ -65,19 +85,22 @@ else()
     endif()
 endif()
 
-if(NOT NVCLUSTER_MULTITHREADED)
-  target_compile_definitions(nv_cluster_builder PRIVATE -DNVCLUSTER_MULTITHREADED=0)
-endif()
+option(NVCLUSTER_MULTITHREADED "Build with multithreaded cluster generation support" ON)
+if(NVCLUSTER_MULTITHREADED)
+  target_compile_definitions(nv_cluster_builder PRIVATE NVCLUSTER_MULTITHREADED=1)
 
-if(NOT MSVC)
   # Optional TBB for std::execution on linux
-  find_library(TBB_LIBRARIES NAMES tbb HINTS ${TBB_DIR})
-  if(TBB_LIBRARIES)
-      message(STATUS "TBB: ${TBB_LIBRARIES}")
-      target_link_libraries(nv_cluster_builder PRIVATE ${TBB_LIBRARIES})
-  else()
-      message(STATUS "TBB not found for std::execution")
+  if(NOT MSVC)
+    find_library(TBB_LIBRARIES NAMES tbb HINTS ${TBB_DIR})
+    if(TBB_LIBRARIES)
+        message(STATUS "TBB: ${TBB_LIBRARIES}")
+        target_link_libraries(nv_cluster_builder PRIVATE ${TBB_LIBRARIES})
+    else()
+        message(STATUS "TBB not found for std::execution")
+    endif()
   endif()
+else()
+  target_compile_definitions(nv_cluster_builder PRIVATE NVCLUSTER_MULTITHREADED=0)
 endif()
 
 if(BUILD_TESTING)

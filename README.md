@@ -1,10 +1,10 @@
 # nv_cluster_builder
 
-**nv_cluster_builder** is a small generic spatial clustering C++ library, created
-to cluster triangle meshes for ray tracing. It is less than 2k lines of code and
-very similar to a recursive node splitting algorithm to create a bounding volume
-hierarchy (BVH). It is limited to axis aligned splits but also produces clusters
-with desirable attributes for raytracing.
+**nv_cluster_builder** is a small generic spatial clustering C++ library,
+created to cluster triangle meshes for ray tracing. It is very similar to a
+recursive node splitting algorithm to create a bounding volume hierarchy (BVH).
+It is limited to axis aligned splits but also produces clusters with desirable
+attributes for raytracing.
 
 ![clusters](doc/clusters.svg)
 
@@ -44,15 +44,19 @@ For a complete usage example, see https://github.com/nvpro-samples/vk_animated_c
 
 ## Usage Example
 
-For more details, refer to [`nvcluster.h`](include/nvcluster/nvcluster.h) (and optionally [`nvcluster_storage.hpp`](include/nvcluster/nvcluster_storage.hpp)).
+For more details, refer to [`nvcluster.h`](include/nvcluster/nvcluster.h) (and
+optionally [`nvcluster_storage.hpp`](include/nvcluster/nvcluster_storage.hpp)).
+The [tests](test/src) may also be useful to look through.
 
 ```
+#include <nvcluster/nvcluster.h>
+#include <nvcluster/nvcluster_storage.hpp>
 
 ...
 
 // Create bounding boxes for each item to be clustered
-std::vector<nvcluster::AABB> boundingBoxes{
-    nvcluster::AABB{{0, 0, 0}, {1, 1, 1}}, // for example
+std::vector<nvcluster_AABB> boundingBoxes{
+    nvcluster_AABB{{0, 0, 0}, {1, 1, 1}}, // for example
     ...
 };
 
@@ -63,51 +67,49 @@ for(size_t i = 0; i < boundingBoxes.size(); i++)
   centroids[i] = 0.5f * (glm::vec3(boundingBoxes[i].bboxMin) + glm::vec3(boundingBoxes[i].bboxMax));
 }
 
-// Input structs
-nvcluster::SpatialElements spatialElements{.boundingBoxes = boundingBoxes.data(),
-                                           .centroids     = reinterpret_cast<const float*>(centroids.data()),
-                                           .elementCount  = static_cast<uint32_t>(boundingBoxes.size())};
-nvcluster::Input           input{
-    .config =
-        {
-            .minClusterSize    = 128,
-            .maxClusterSize    = 128,
-            .costUnderfill     = 0.0f,  // zero to one (exclusive)
-            .costOverlap       = 0.0f,  // zero to one (exclusive)
-            .preSplitThreshold = 0,     // median-split bigger nodes (0=disable)
-        },
-    .spatialElements = &spatialElements,
-    .graph           = nullptr, // optional adjacency - see test_clusterizer.cpp for examples of this in use
+// Input
+nvcluster_Input  input{.itemBoundingBoxes = reinterpret_cast<nvcluster_AABB*>(boundingBoxes.data()),
+                       .itemCentroids     = reinterpret_cast<nvcluster_Vec3f*>(centroids.data()),
+                       .itemCount         = static_cast<uint32_t>(boundingBoxes.size())};
+nvcluster_Config config{
+    .minClusterSize    = 128,
+    .maxClusterSize    = 128,
+    .costUnderfill     = 0.0f,  // zero to one (exclusive)
+    .costOverlap       = 0.0f,  // zero to one (exclusive)
+    .preSplitThreshold = 0,     // median-split bigger nodes (0=disable)
 };
 
-// Create context
-nvcluster::ContextCreateInfo info{};
-nvcluster::Context context;
-nvclusterCreateContext(&info, &context);
+// Create context (there's also ScopedContext in test_util.hpp)
+nvcluster_ContextCreateInfo info{};
+nvcluster_Context context;
+nvclusterCreateContext(&info, &context);  // Add error checking
 
 // Create clusters
-// This is a thin wrapper with std::vector output storage for nvcluster::nvclusterCreate(...)
+// This is a thin wrapper with std::vector storage for nvclusterBuild(...)
 nvcluster::ClusterStorage clustering;
-nvcluster::generateClusters(context, input, clustering);
+nvcluster::generateClusters(context, config, input, clustering);  // Add error checking, don't leak context etc.
 
 // Do something with the result
-for(size_t clusterIndex = 0; clusterIndex < clustering.clusterRanges.size(); ++clusterIndex)
+for(size_t clusterIndex = 0; clusterIndex < clustering.clusterItemRanges.size(); ++clusterIndex)
 {
-  const nvcluster::Range& range = clustering.clusterRanges[clusterIndex];
+  const nvcluster_Range& range = clustering.clusterItemRanges[clusterIndex];
   for(uint32_t clusterItemIndex = 0; clusterItemIndex < range.count; ++clusterItemIndex)
   {
-    uint32_t clusterItem = clustering.clusterItems[range.offset + clusterItemIndex];
+    uint32_t clusterItem = clustering.items[range.offset + clusterItemIndex];
     ...
   }
 }
+
+// If not wrapping the C API,
+nvclusterDestroyContext(context);
 ```
 
 ## Build Integration
 
-This library uses CMake and requires C++20. It is currently a static
-library, designed with C compatibility in mind with data passed as a structure
-of arrays and output allocated by the user. Integration has been verified by
-directly including it with `add_subdirectory`:
+This library uses CMake and requires C++20. It compiles as a static library by
+default. Use `-DNVCLUSTER_BUILDER_SHARED=ON` to compile a shared library. Data
+is passed as structures of arrays and the output must be allocated by the user.
+Integration has been verified by directly including it with `add_subdirectory`:
 
 ```
 add_subdirectory(nv_cluster_builder)
@@ -120,7 +122,9 @@ If there is interest, please reach out for CMake config files (for
 
 ### Dependencies
 
-None.
+Just a C++20 compiler.
+
+Parallel execution on linux uses `tbb` if available. For ubuntu, `sudo apt install libtbb-dev`.
 
 If tests are enabled (set the CMake `BUILD_TESTING` variable to `ON`),
 nv_cluster_builder will use [`FetchContent`](https://cmake.org/cmake/help/latest/module/FetchContent.html)

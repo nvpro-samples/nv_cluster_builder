@@ -22,117 +22,99 @@
 
 #include <nvcluster/nvcluster.h>
 
-
 namespace nvcluster {
 
-// Shortcut and storage for flat clustering output
+// Utility storage for clustering output
+// Construct with generateClusters()
 struct ClusterStorage
 {
-  std::vector<Range>    clusterRanges;
-  std::vector<uint32_t> clusterItems;
+  std::vector<nvcluster_Range> clusterItemRanges;
+  std::vector<uint32_t>        items;
 };
 
-
-inline nvcluster::Result generateClusters(nvcluster::Context context, const Input& input, ClusterStorage& clusterStorage)
-{
-
-  ClusterGetRequirementsInfo info{.input = &input};
-
-
-  Requirements      reqs;
-  nvcluster::Result result = nvclusterGetRequirements(context, &info, &reqs);
-
-  if(result != nvcluster::Result::SUCCESS)
-  {
-    return result;
-  }
-
-  clusterStorage.clusterRanges.resize(reqs.maxClusterCount);
-  clusterStorage.clusterItems.resize(reqs.maxClusteredElementCount);
-
-  ClusterCreateInfo createInfo;
-  createInfo.input = &input;
-
-  Output clusters;
-  clusters.clusteredElementIndices    = clusterStorage.clusterItems.data();
-  clusters.clusterRanges              = clusterStorage.clusterRanges.data();
-  clusters.clusterCount               = reqs.maxClusterCount;
-  clusters.clusteredElementIndexCount = reqs.maxClusteredElementCount;
-  result                              = nvclusterCreate(context, &createInfo, &clusters);
-
-  if(result == nvcluster::Result::SUCCESS)
-  {
-    clusterStorage.clusterRanges.resize(clusters.clusterCount);
-    clusterStorage.clusterItems.resize(clusters.clusteredElementIndexCount);
-  }
-  return result;
-}
-
-inline void clearClusters(ClusterStorage& clusterStorage)
-{
-  clusterStorage.clusterRanges.clear();
-  clusterStorage.clusterItems.clear();
-}
-
-
+// Utility storage for segmented clustering output
+// Construct with generateSegmentedClusters()
 struct SegmentedClusterStorage
 {
-  std::vector<Range>    clusterRangeSegments;
-  std::vector<Range>    clusterRanges;
-  std::vector<uint32_t> clusterItems;
+  std::vector<nvcluster_Range> segmentClusterRanges;
+  std::vector<nvcluster_Range> clusterItemRanges;
+  std::vector<uint32_t>        items;
 };
 
-inline nvcluster::Result generateSegmentedClusters(nvcluster::Context       context,
-                                                   const Input&             input,
-                                                   const Range*             itemSegments,
-                                                   uint32_t                 itemSegmentCount,
-                                                   SegmentedClusterStorage& segmentedClusterStorage)
+// ClusterStorage delayed init constructor
+inline nvcluster_Result generateClusters(nvcluster_Context       context,
+                                         const nvcluster_Config& config,
+                                         const nvcluster_Input&  input,
+                                         ClusterStorage&         clusterStorage)
 {
-  segmentedClusterStorage.clusterRangeSegments.resize(itemSegmentCount);
-
-  ClusterGetRequirementsSegmentedInfo info;
-  info.input               = &input;
-  info.elementSegmentCount = itemSegmentCount;
-  info.elementSegments     = itemSegments;
-
-  Requirements      reqs;
-  nvcluster::Result result = nvclusterGetRequirementsSegmented(context, &info, &reqs);
-  if(result != nvcluster::Result::SUCCESS)
+  // Query output upper limit
+  nvcluster_Counts requiredCounts;
+  nvcluster_Result result = nvclusterGetRequirements(context, &config, input.itemCount, &requiredCounts);
+  if(result != nvcluster_Result::NVCLUSTER_SUCCESS)
   {
     return result;
   }
-  segmentedClusterStorage.clusterRanges.resize(reqs.maxClusterCount);
-  segmentedClusterStorage.clusterItems.resize(reqs.maxClusteredElementCount);
 
+  // Resize to the upper limit
+  clusterStorage.clusterItemRanges.resize(requiredCounts.clusterCount);
+  clusterStorage.items.resize(requiredCounts.itemCount);
 
-  ClusterCreateSegmentedInfo createInfo;
-  createInfo.input               = &input;
-  createInfo.elementSegmentCount = itemSegmentCount;
-  createInfo.elementSegments     = itemSegments;
-
-  Output clusters;
-  clusters.clusteredElementIndices    = segmentedClusterStorage.clusterItems.data();
-  clusters.clusterRanges              = segmentedClusterStorage.clusterRanges.data();
-  clusters.clusterCount               = reqs.maxClusterCount;
-  clusters.clusteredElementIndexCount = reqs.maxClusteredElementCount;
-
-  result = nvclustersCreateSegmented(context, &createInfo, &clusters, segmentedClusterStorage.clusterRangeSegments.data());
-
-  if(result == nvcluster::Result::SUCCESS)
+  // Build clusters
+  nvcluster_OutputClusters outputClusters{
+      .clusterItemRanges = clusterStorage.clusterItemRanges.data(),
+      .items             = clusterStorage.items.data(),
+      .clusterCount      = uint32_t(clusterStorage.clusterItemRanges.size()),
+      .itemCount         = uint32_t(clusterStorage.items.size()),
+  };
+  result = nvclusterBuild(context, &config, &input, &outputClusters);
+  if(result != nvcluster_Result::NVCLUSTER_SUCCESS)
   {
-
-    segmentedClusterStorage.clusterRanges.resize(clusters.clusterCount);
-    segmentedClusterStorage.clusterItems.resize(clusters.clusteredElementIndexCount);
+    return result;
   }
+
+  // Resize down to what was written
+  clusterStorage.clusterItemRanges.resize(outputClusters.clusterCount);
+  clusterStorage.items.resize(outputClusters.itemCount);
   return result;
 }
 
-inline void clearSegmentedClusters(SegmentedClusterStorage& segmentedClusterStorage)
+inline nvcluster_Result generateSegmentedClusters(nvcluster_Context         context,
+                                                  const nvcluster_Config&   config,
+                                                  const nvcluster_Input&    input,
+                                                  const nvcluster_Segments& segments,
+                                                  SegmentedClusterStorage&  segmentedClusterStorage)
 {
-  segmentedClusterStorage.clusterRangeSegments.clear();
-  segmentedClusterStorage.clusterRanges.clear();
-  segmentedClusterStorage.clusterItems.clear();
-}
+  // Query output upper limit
+  nvcluster_Counts requiredCounts;
+  nvcluster_Result result = nvclusterGetRequirementsSegmented(context, &config, input.itemCount, &segments, &requiredCounts);
+  if(result != nvcluster_Result::NVCLUSTER_SUCCESS)
+  {
+    return result;
+  }
 
+  // Resize to the upper limit
+  segmentedClusterStorage.segmentClusterRanges.resize(segments.segmentCount);
+  segmentedClusterStorage.clusterItemRanges.resize(requiredCounts.clusterCount);
+  segmentedClusterStorage.items.resize(requiredCounts.itemCount);
+
+  // Build clusters
+  nvcluster_OutputClusters outputClusters{
+      .clusterItemRanges = segmentedClusterStorage.clusterItemRanges.data(),
+      .items             = segmentedClusterStorage.items.data(),
+      .clusterCount      = uint32_t(segmentedClusterStorage.clusterItemRanges.size()),
+      .itemCount         = uint32_t(segmentedClusterStorage.items.size()),
+  };
+  result = nvclusterBuildSegmented(context, &config, &input, &segments, &outputClusters,
+                                   segmentedClusterStorage.segmentClusterRanges.data());
+  if(result != nvcluster_Result::NVCLUSTER_SUCCESS)
+  {
+    return result;
+  }
+
+  // Resize down to what was written
+  segmentedClusterStorage.clusterItemRanges.resize(outputClusters.clusterCount);
+  segmentedClusterStorage.items.resize(outputClusters.itemCount);
+  return result;
+}
 
 }  // namespace nvcluster

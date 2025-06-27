@@ -31,12 +31,12 @@
 // support is added
 #if defined(_LIBCPP_VERSION)
 
+// Disable parallel execution as it is not supported by libc++ or this shim
 #if !defined(NVCLUSTER_MULTITHREADED)
 #define NVCLUSTER_MULTITHREADED 0
-#endif
-
-#if NVCLUSTER_MULTITHREADED
-#error parallel_execution_libcxx.hpp must be included first as libc++ does not support std::execution
+#else
+#undef NVCLUSTER_MULTITHREADED
+#define NVCLUSTER_MULTITHREADED 0
 #endif
 
 namespace std {
@@ -71,22 +71,27 @@ void for_each(ExecutionPolicy&&,
   for_each(first, last, f);
 }
 
+template <class ExecutionPolicy, class ForwardIt1, class ForwardIt2>
+  requires std::same_as<std::decay_t<ExecutionPolicy>, execution::sequenced_policy>
+ForwardIt2 inclusive_scan(ExecutionPolicy&&, ForwardIt1 first, ForwardIt1 last, ForwardIt2 d_first)
+{
+  return inclusive_scan(first, last, d_first);
+}
+
 template <class ExecutionPolicy, class ForwardIt1, class ForwardIt2, class T>
   requires std::same_as<std::decay_t<ExecutionPolicy>, execution::sequenced_policy>
+           || std::same_as<std::decay_t<ExecutionPolicy>, execution::parallel_policy>
+           || std::same_as<std::decay_t<ExecutionPolicy>, execution::parallel_unsequenced_policy>
+           || std::same_as<std::decay_t<ExecutionPolicy>, execution::unsequenced_policy>
 ForwardIt2 exclusive_scan(ExecutionPolicy&&, ForwardIt1 first, ForwardIt1 last, ForwardIt2 d_first, T init)
 {
+  static_assert(std::same_as<std::decay_t<ExecutionPolicy>, execution::sequenced_policy>);  // SFINAE delayed error
   return exclusive_scan(first, last, d_first, init);
 }
 
 template <class ExecutionPolicy, class ForwardIt1, class ForwardIt2, class T, class BinaryOp>
   requires std::same_as<std::decay_t<ExecutionPolicy>, execution::sequenced_policy>
-ForwardIt2 exclusive_scan(ExecutionPolicy&&,
-                          ForwardIt1 first,
-                          ForwardIt1 last,
-
-                          ForwardIt2 d_first,
-                          T          init,
-                          BinaryOp   op)
+ForwardIt2 exclusive_scan(ExecutionPolicy&&, ForwardIt1 first, ForwardIt1 last, ForwardIt2 d_first, T init, BinaryOp op)
 {
   return exclusive_scan(first, last, d_first, init, op);
 }
