@@ -161,7 +161,9 @@ nvcluster_Result nvclusterGetRequirements(nvcluster_Context context, const nvclu
 inline nvcluster_Result buildMaybeWithConnections(nvcluster_Context         context,
                                                   const nvcluster_Config*   config,
                                                   const nvcluster_Input*    input,
-                                                  nvcluster_OutputClusters* outputClusters)
+                                                  nvcluster_OutputClusters* outputClusters,
+                                                  const nvcluster_Segments* segments             = nullptr,
+                                                  nvcluster_Range*          segmentClusterRanges = nullptr)
 {
   // API permutation consistency checks
   if(input->itemVertices)
@@ -210,14 +212,26 @@ inline nvcluster_Result buildMaybeWithConnections(nvcluster_Context         cont
     }
   }
 
+  nvcluster_Range    singleSegmentRange{0, input->itemCount};
+  nvcluster_Segments singleSegment{
+      .segmentItemRanges = &singleSegmentRange,
+      .segmentCount      = 1,
+  };
+  nvcluster_Range outputSegmentIgnored;
+  if(segments == nullptr && segmentClusterRanges == nullptr)
+  {
+    segments             = &singleSegment;
+    segmentClusterRanges = &outputSegmentIgnored;
+  }
+
   // Skip computing connections if the item limit makes the vertex limit
   // redundant.
   bool skipVertexLimit = input->itemVertices && config->maxClusterSize * config->itemVertexCount <= config->maxClusterVertices;
   if(input->itemVertices && !skipVertexLimit)
   {
     nvcluster::MeshConnections meshConnections = nvcluster::makeMeshConnections(context->parallelize, *config, *input);
-    return nvcluster::clusterize(context->parallelize, nvcluster::Input(*config, *input, meshConnections),
-                                 nvcluster::OutputClusters(*outputClusters));
+    return nvcluster::clusterize(context->parallelize, nvcluster::Input(*config, *input, *segments, meshConnections),
+                                 nvcluster::OutputClusters(*outputClusters, segmentClusterRanges, segments->segmentCount));
   }
   else
   {
@@ -229,7 +243,8 @@ inline nvcluster_Result buildMaybeWithConnections(nvcluster_Context         cont
       configCopy.maxClusterVertices = ~0u;
       config                        = &configCopy;
     }
-    return nvcluster::clusterize(context->parallelize, nvcluster::Input(*config, *input), nvcluster::OutputClusters(*outputClusters));
+    return nvcluster::clusterize(context->parallelize, nvcluster::Input(*config, *input, *segments),
+                                 nvcluster::OutputClusters(*outputClusters, segmentClusterRanges, segments->segmentCount));
   }
 }
 
@@ -325,79 +340,5 @@ nvcluster_Result nvclusterBuildSegmented(nvcluster_Context         context,
     return nvcluster_Result::NVCLUSTER_ERROR_NULL_OUTPUT;
   }
 
-  // For each segment
-  nvcluster_Counts outputSizes = {0, 0};
-  for(uint32_t segmentIndex = 0; segmentIndex < segments->segmentCount; segmentIndex++)
-  {
-    const nvcluster_Range& segmentItemRange = segments->segmentItemRanges[segmentIndex];
-    if(input->itemCount < segmentItemRange.offset + segmentItemRange.count)
-    {
-      return nvcluster_Result::NVCLUSTER_ERROR_SEGMENT_AND_ITEM_COUNT_CONTRADICTION;
-    }
-    if(outputSizes.itemCount + segmentItemRange.count > outputClusters->itemCount)
-    {
-      return nvcluster_Result::NVCLUSTER_ERROR_INTERNAL_SEGMENTED_ITEM_PACKING;
-    }
-
-    // Slice the input by the segment range. Note that connections are not
-    // sliced as itemConnectionRanges refers to them globally. This makes the
-    // current naive segmented implementation particularly inefficient.
-    nvcluster_Input segmentedInput{
-        .itemBoundingBoxes = input->itemBoundingBoxes + segmentItemRange.offset,
-        .itemCentroids     = input->itemCentroids + segmentItemRange.offset,
-        .itemCount         = segmentItemRange.count,
-        .itemConnectionRanges = input->itemConnectionRanges ? input->itemConnectionRanges + segmentItemRange.offset : nullptr,
-        .connectionTargetItems = input->connectionTargetItems,
-        .connectionWeights     = input->connectionWeights,
-        .connectionVertexBits  = input->connectionVertexBits,
-        .connectionCount       = input->connectionCount,
-        .itemVertices = input->itemVertices ? input->itemVertices + segmentItemRange.offset * config->itemVertexCount : nullptr,
-        .vertexCount = input->vertexCount,
-    };
-
-    // Slice the output clusters by the segment range and output items by all
-    // remaining elements in the list. outputSizes.clusterCount is a running
-    // total used as the offset for the next segment of clusters to write to.
-    nvcluster_OutputClusters segmentedOutput{
-        .clusterItemRanges = outputClusters->clusterItemRanges + outputSizes.clusterCount,
-        .items             = outputClusters->items + outputSizes.itemCount,
-        .clusterCount      = outputClusters->clusterCount - outputSizes.clusterCount,
-        .itemCount         = segmentItemRange.count,
-    };
-
-    // Perform clustering on just the segment
-    nvcluster_Result result = buildMaybeWithConnections(context, config, &segmentedInput, &segmentedOutput);
-    if(result != nvcluster_Result::NVCLUSTER_SUCCESS)
-    {
-      return result;
-    }
-
-    if(outputSizes.clusterCount + segmentedOutput.clusterCount > outputClusters->clusterCount)
-    {
-      return nvcluster_Result::NVCLUSTER_ERROR_INTERNAL_SEGMENTED_CLUSTER_PACKING;
-    }
-
-    // Translate segment range offsets to global offsets
-    for(uint32_t rangeIndex = 0; rangeIndex < segmentedOutput.clusterCount; rangeIndex++)
-    {
-      nvcluster_Range& clusterRange = segmentedOutput.clusterItemRanges[rangeIndex];
-      clusterRange.offset += outputSizes.itemCount;
-    }
-
-    // Translate local item indices to global indices
-    for(uint32_t itemIndex = 0; itemIndex < segmentedOutput.itemCount; itemIndex++)
-    {
-      segmentedOutput.items[itemIndex] += segmentItemRange.offset;
-    }
-
-    // Emit the segment of clustered items
-    segmentClusterRanges[segmentIndex] = nvcluster_Range{outputSizes.clusterCount, segmentedOutput.clusterCount};
-    outputSizes.clusterCount += segmentedOutput.clusterCount;
-    outputSizes.itemCount += segmentedOutput.itemCount;
-  }
-
-  outputClusters->clusterCount = outputSizes.clusterCount;
-  outputClusters->itemCount    = outputSizes.itemCount;
-
-  return nvcluster_Result::NVCLUSTER_SUCCESS;
+  return buildMaybeWithConnections(context, config, input, outputClusters, segments, segmentClusterRanges);
 }

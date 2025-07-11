@@ -139,6 +139,12 @@ struct ErrorFlags
   std::atomic<uint32_t> underflowItemCount = 0;
 };
 
+struct NodeRange : Range
+{
+  // Track which segment nodes belong to
+  uint32_t segment;
+};
+
 // Temporary storage and parameter pack for functions that split nodes.
 struct SplitNodeTemp
 {
@@ -683,7 +689,8 @@ static void splitAtMedianUntil(const Input& spatial,  // Original definition of 
                                const std::array<std::span<uint32_t>, 3>& nodeItems,  // Sorted item indices along each axis for the current node
                                size_t maxItemsPerNode,  // Maximum number of items allowed per node, used to stop the recursion
                                uint32_t nodeStartIndex,  // Starting index of the node in the complete sorted lists of items
-                               std::vector<Range>& nodeItemRanges  // Output ranges of the nodes (in the sorted item lists) created by the recursive split
+                               uint32_t segmentIndex,  // Index of the segment this node was split from
+                               std::vector<NodeRange>& nodeItemRanges  // Output ranges of the nodes (in the sorted item lists) created by the recursive split
 )
 {
   uint32_t nodeItemCount = uint32_t(nodeItems[0].size());
@@ -691,7 +698,7 @@ static void splitAtMedianUntil(const Input& spatial,  // Original definition of 
   // If the current node is smaller than the maximum allowed item count, return its range
   if(nodeItemCount < maxItemsPerNode)
   {
-    nodeItemRanges.push_back(Range{nodeStartIndex, nodeItemCount});
+    nodeItemRanges.push_back(NodeRange{nodeStartIndex, nodeItemCount, segmentIndex});
     return;
   }
 
@@ -724,8 +731,9 @@ static void splitAtMedianUntil(const Input& spatial,  // Original definition of 
       nodeItems[2].subspan(splitPosition),
   });
   // Continue the split recursively on the left and right halves
-  splitAtMedianUntil<Parallelize>(spatial, partitionSides, left, maxItemsPerNode, nodeStartIndex, nodeItemRanges);
-  splitAtMedianUntil<Parallelize>(spatial, partitionSides, right, maxItemsPerNode, nodeStartIndex + splitPosition, nodeItemRanges);
+  splitAtMedianUntil<Parallelize>(spatial, partitionSides, left, maxItemsPerNode, nodeStartIndex, segmentIndex, nodeItemRanges);
+  splitAtMedianUntil<Parallelize>(spatial, partitionSides, right, maxItemsPerNode, nodeStartIndex + splitPosition,
+                                  segmentIndex, nodeItemRanges);
 }
 
 // Find the lowest cost split on any axis, perform the split (partition
@@ -785,11 +793,13 @@ template <bool ThreadSafe>
 void addChildNode(const Input&          input,
                   ErrorFlags&           errorFlags,
                   const bool&           nodeComplete,
-                  const Range&          newNode,
-                  std::span<Range>      outNodes,       // Output nodes storage where child nodes will be added
+                  const NodeRange&      newNode,
+                  std::span<NodeRange>  outNodes,       // Output nodes storage where child nodes will be added
                   uint32_t&             outNodesAlloc,  // Current number of nodes in the output
-                  const OutputClusters& clusters)
+                  const OutputClusters& clusters,
+                  std::span<NodeRange>  results)
 {
+  assert(newNode.count > 0);
   if(newNode.count == 0)
   {
     // Empty nodes are a bug
@@ -802,12 +812,12 @@ void addChildNode(const Input&          input,
     {
       uint32_t index = std::atomic_ref(clusters.clusterCount)++;
       assert(size_t(index) < clusters.clusterItemRanges.size());
-      clusters.clusterItemRanges[index] = newNode;
+      results[index] = newNode;
     }
     else
     {
       assert(clusters.clusterCount < clusters.clusterItemRanges.size());
-      clusters.clusterItemRanges[clusters.clusterCount++] = newNode;
+      results[clusters.clusterCount++] = newNode;
     }
     if(newNode.count < input.config.minClusterSize)
       errorFlags.underflowItemCount++;
@@ -834,16 +844,17 @@ void addChildNode(const Input&          input,
 template <bool ThreadSafe>
 void addChildNodes(const Input&          input,
                    ErrorFlags&           errorFlags,
-                   const Range&          node,
+                   const NodeRange&      node,
                    const Split&          split,
-                   std::span<Range>      outNodes,       // Output nodes storage where child nodes will be added
+                   std::span<NodeRange>  outNodes,       // Output nodes storage where child nodes will be added
                    uint32_t&             outNodesAlloc,  // Current number of nodes in the output
-                   const OutputClusters& clusters)
+                   const OutputClusters& clusters,
+                   std::span<NodeRange>  results)
 {
-  Range left{node.offset, split.position};
-  Range right{node.offset + split.position, node.count - split.position};
-  addChildNode<ThreadSafe>(input, errorFlags, split.leftComplete, left, outNodes, outNodesAlloc, clusters);
-  addChildNode<ThreadSafe>(input, errorFlags, split.rightComplete, right, outNodes, outNodesAlloc, clusters);
+  NodeRange left{node.offset, split.position, node.segment};
+  NodeRange right{node.offset + split.position, node.count - split.position, node.segment};
+  addChildNode<ThreadSafe>(input, errorFlags, split.leftComplete, left, outNodes, outNodesAlloc, clusters, results);
+  addChildNode<ThreadSafe>(input, errorFlags, split.rightComplete, right, outNodes, outNodesAlloc, clusters, results);
 }
 
 // Starting from a set of spatial items defined by their bounding boxes and
@@ -925,6 +936,10 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
   // Scatter/gather temporary data for buildAdjacencyInSortedList()
   std::vector<uint32_t> itemIndexToNodesIndex[3];
 
+  // Segments will produce variable-size clusters. Cluster are first written
+  // here in arbitrary order, then written to the output in segment order.
+  std::vector<NodeRange> results(clusters.clusterItemRanges.size());
+
   // The kD-tree will split the array of spatial items recursively along the X, Y and Z axes. In order to
   // run the splitting algorithm we first need to sort the input spatial items along each of those axis,
   // so the splitting will only require a simple partitioning.
@@ -947,9 +962,15 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
   auto nodeItems = std::to_array<std::span<uint32_t>>({clusters.items, sortedY, sortedZ});
   {
     Stopwatch swSort("sort");
-    std::sort(exec<Parallelize>, nodeItems[0].begin(), nodeItems[0].end(), CentroidCompare<0>(input.centroids));
-    std::sort(exec<Parallelize>, nodeItems[1].begin(), nodeItems[1].end(), CentroidCompare<1>(input.centroids));
-    std::sort(exec<Parallelize>, nodeItems[2].begin(), nodeItems[2].end(), CentroidCompare<2>(input.centroids));
+    for(Range segment : input.segments)
+    {
+      std::sort(exec<Parallelize>, nodeItems[0].begin() + segment.offset,
+                nodeItems[0].begin() + segment.offset + segment.count, CentroidCompare<0>(input.centroids));
+      std::sort(exec<Parallelize>, nodeItems[1].begin() + segment.offset,
+                nodeItems[1].begin() + segment.offset + segment.count, CentroidCompare<1>(input.centroids));
+      std::sort(exec<Parallelize>, nodeItems[2].begin() + segment.offset,
+                nodeItems[2].begin() + segment.offset + segment.count, CentroidCompare<2>(input.centroids));
+    }
   }
 
   // Temporary data for connectivity costs
@@ -999,8 +1020,8 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
   // desired number of items. Unlike a BVH build, the hierarchy is not stored
   // and leaf nodes are immediately emitted as clusters. The current list of
   // nodes is double buffered nodes for each level.
-  std::vector<Range> nodeItemRangesCurrent, nodeItemRangesNext;
-  size_t             maxNodes = (2 * itemCount) / input.config.maxClusterSize;
+  std::vector<NodeRange> nodeItemRangesCurrent, nodeItemRangesNext;
+  size_t                 maxNodes = (2 * itemCount) / input.config.maxClusterSize;
   if(HasVertexLimit)
   {
     // We can guarantee only 1 underflow without additional constraints.
@@ -1015,7 +1036,11 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
   uint32_t sanitizedPreSplitThreshold = std::max(input.config.preSplitThreshold, input.config.maxClusterSize * 2);
   if(input.config.preSplitThreshold == 0 || itemCount < sanitizedPreSplitThreshold)
   {
-    nodeItemRangesCurrent.push_back({0, itemCount});
+    // Segments become root nodes to be split
+    for(uint32_t i = 0; i < input.segments.size(); i++)
+    {
+      nodeItemRangesCurrent.push_back(NodeRange{input.segments[i].offset, input.segments[i].count, i});
+    }
   }
   else
   {
@@ -1023,7 +1048,17 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
     // Performance optimization. If there are more than preSplitThreshold items in the root node,
     // create child nodes by performing simple median splits on the input item lists until each node contains a maximum of sanitizedPreSplitThreshold items.
     // This reduces the overally computational cost of the BVH build by applying the more accurate (and costly) node splitting algorithm only on smaller nodes.
-    splitAtMedianUntil<Parallelize>(input, partitionSides, nodeItems, sanitizedPreSplitThreshold, 0, nodeItemRangesCurrent);
+    for(uint32_t segmentIndex = 0; segmentIndex < input.segments.size(); segmentIndex++)
+    {
+      Range segment      = input.segments[segmentIndex];
+      auto  segmentItems = std::to_array({
+          nodeItems[0].subspan(segment.offset, segment.count),
+          nodeItems[1].subspan(segment.offset, segment.count),
+          nodeItems[2].subspan(segment.offset, segment.count),
+      });
+      splitAtMedianUntil<Parallelize>(input, partitionSides, segmentItems, sanitizedPreSplitThreshold, segment.offset,
+                                      segmentIndex, nodeItemRangesCurrent);
+    }
   }
 
   // Handle the case where the root node, or nodes after median splitting, are
@@ -1038,14 +1073,14 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
   }
   nodeItemRangesCurrent.erase(
       std::remove_if(nodeItemRangesCurrent.begin(), nodeItemRangesCurrent.end(),
-                     [&](Range node) {
+                     [&](const NodeRange& node) {
                        if(node.count <= input.config.maxClusterSize
                           && (!HasVertexLimit
                               || !vertexCountOverflows<0 /* axis zero */>(
                                   input, intermediates.subspan<false /* weights not used */, true /* vertex limit */>(node))))
                        {
                          assert(node.count > 0);
-                         clusters.clusterItemRanges[clusters.clusterCount++] = node;
+                         results[clusters.clusterCount++] = node;
                          if(node.count < input.config.minClusterSize)
                            errorFlags.underflowItemCount++;
                          return true;
@@ -1074,28 +1109,29 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
     nodeItemRangesNext.resize(nodeItemRangesNext.capacity());  // conservative over-allocation
 
     // Process all nodes in the current level. If there are a small number of
-    // nodes, parallelize internally, otherwise parallelize externally. This
-    // works well for large input counts with the median split above.
-    size_t nodeCountThreshold    = nodeItemRangesCurrent[0].count > 100000 ? std::thread::hardware_concurrency() :
-                                                                             std::thread::hardware_concurrency() / 4;
-    bool   parallelizeInternally = nodeItemRangesCurrent.size() < nodeCountThreshold;
+    // large nodes, parallelize internally, otherwise parallelize externally.
+    size_t nodeCountThreshold = nodeItemRangesCurrent[0].count > 100000 ? std::thread::hardware_concurrency() :
+                                                                          std::thread::hardware_concurrency() / 4;
+    // Add an exception for small nodes as high thread counts can throw this
+    // off. MSVC parallel execution doesn't perform well with small batches.
+    bool parallelizeInternally = nodeItemRangesCurrent[0].count > 4096 && nodeItemRangesCurrent.size() < nodeCountThreshold;
     if(!Parallelize || parallelizeInternally)
     {
-      for(Range node : nodeItemRangesCurrent)
+      for(const NodeRange& node : nodeItemRangesCurrent)
       {
         Split split = splitNode<Parallelize, HasConnectionWeights, HasVertexLimit>(
             input, intermediates.subspan<HasConnectionWeights, HasVertexLimit>(node));
         addChildNodes<false /* no thread safety needed */>(input, errorFlags, node, split, nodeItemRangesNext,
-                                                           nodesNextAlloc, clusters);
+                                                           nodesNextAlloc, clusters, results);
       }
     }
     else
     {
       parallel_batches<Parallelize /* true */, 1>(nodeItemRangesCurrent.size(), [&](size_t i) {
-        const Range& node  = nodeItemRangesCurrent[i];
-        Split        split = splitNode<false /* not parallel */, HasConnectionWeights, HasVertexLimit>(
+        const NodeRange& node  = nodeItemRangesCurrent[i];
+        Split            split = splitNode<false /* not parallel */, HasConnectionWeights, HasVertexLimit>(
             input, intermediates.subspan<HasConnectionWeights, HasVertexLimit>(node));
-        addChildNodes<true /* thread safe */>(input, errorFlags, node, split, nodeItemRangesNext, nodesNextAlloc, clusters);
+        addChildNodes<true /* thread safe */>(input, errorFlags, node, split, nodeItemRangesNext, nodesNextAlloc, clusters, results);
       });
     }
 
@@ -1123,6 +1159,49 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
   }
 
   assert(clusters.clusterCount > 0);  // already returned if empty
+
+  if(input.segments.size() == 1)
+  {
+    // Fast path for a single segment, writing cluster items directly
+    // TOOD: ideally results would be written directly without copying
+    for(uint32_t i = 0; i < clusters.clusterCount; i++)
+    {
+      clusters.clusterItemRanges[i] = results[i];  // NodeRange to Range
+      assert(results[i].count > 0);
+    }
+    clusters.segments[0] = {0, clusters.clusterCount};
+  }
+  else
+  {
+    // Count output clusters per segment
+    // TODO: parallelize all this?
+    std::ranges::fill(clusters.segments, Range{0, 0});
+    for(uint32_t i = 0; i < clusters.clusterCount; i++)
+    {
+      clusters.segments[results[i].segment].count++;
+    }
+
+    // Prefix sum segment counts into offsets
+    for(uint32_t i = 1; i < input.segments.size(); i++)
+    {
+      clusters.segments[i].offset = clusters.segments[i - 1].offset + clusters.segments[i - 1].count;
+    }
+
+    // Zero segment counts
+    for(uint32_t i = 0; i < input.segments.size(); i++)
+    {
+      clusters.segments[i].count = 0;
+    }
+
+    // Write output clusters
+    for(uint32_t i = 0; i < clusters.clusterCount; i++)
+    {
+      auto& segment                                                = clusters.segments[results[i].segment];
+      clusters.clusterItemRanges[segment.offset + segment.count++] = results[i];
+      assert(results[i].count > 0);
+    }
+  }
+
   return nvcluster_Result::NVCLUSTER_SUCCESS;
 }
 

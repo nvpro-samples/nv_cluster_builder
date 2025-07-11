@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <execution>
 #include <functional>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -619,7 +620,8 @@ TEST(GeneralUnderfill, VertexCount)
   config.maxClusterSize     = 128;
   config.maxClusterVertices = 3;  // set later
   config.itemVertexCount    = 3;  // 3 = triangles
-  nvcluster::Input input{config, {}};
+  std::vector<nvcluster_Range> segments{{}};
+  nvcluster::Input             input{config, {}, nvcluster_Segments{segments.data(), 1}};
 
   // Underfill of 3 vertices with a max of 3 should be zero
   nvcluster::Underfill underfill = nvcluster::generalUnderfillCount(input, 13, 3);
@@ -665,7 +667,8 @@ TEST(GeneralUnderfill, VertexGrid)
   config.maxClusterSize     = 9999;
   config.maxClusterVertices = 0;  // set later
   config.itemVertexCount    = 3;  // 3 = triangles
-  nvcluster::Input input{config, {}};
+  std::vector<nvcluster_Range> segments{{}};
+  nvcluster::Input             input{config, {}, nvcluster_Segments{segments.data(), 1}};
   for(uint32_t ch = 2; ch < 20; ++ch)
   {
     uint32_t cw           = ch;  // square clusters
@@ -773,19 +776,21 @@ TEST(Clusters, SimpleLineMaxVertex)
       SCOPED_TRACE("Max Vertices Per Cluster: " + std::to_string(maxVerticesPerCluster));
 
       // Build clusters
-      ClusterStorage clustering(nvcluster::Input{
+      std::vector<nvcluster::Range> oneSegment{{0, uint32_t(boundingBoxes.size())}};
+      ClusterStorage                clustering(nvcluster::Input{
           nvcluster_Config{
-              .minClusterSize        = 1,
-              .maxClusterSize        = 6,
-              .maxClusterVertices    = maxVerticesPerCluster,
-              .costUnderfill         = 0.0f,
-              .costOverlap           = 0.0f,
-              .costUnderfillVertices = 1.0f,
-              .itemVertexCount       = itemVertexCount,
-              .preSplitThreshold     = 0,
+                             .minClusterSize        = 1,
+                             .maxClusterSize        = 6,
+                             .maxClusterVertices    = maxVerticesPerCluster,
+                             .costUnderfill         = 0.0f,
+                             .costOverlap           = 0.0f,
+                             .costUnderfillVertices = 1.0f,
+                             .itemVertexCount       = itemVertexCount,
+                             .preSplitThreshold     = 0,
           },
           boundingBoxes,
           centroids,
+          oneSegment,
           connectionRanges,
           connectionItems,
           connectionWeights,
@@ -1053,22 +1058,24 @@ TEST(Clusters, Simple2x2MaxVertex)
   // Build clusters
   for(float costUnderfillVertices : {0.0f, 1.0f})
   {
-    ClusterStorage clustering(nvcluster::Input{
+    std::vector<nvcluster::Range> oneSegment{{0, uint32_t(boundingBoxes.size())}};
+    ClusterStorage                clustering(nvcluster::Input{
         nvcluster_Config{
-            .minClusterSize = 1,
-            .maxClusterSize = 4,  // Should not result in 4 or even 3, because that would exceed 6 vertices per cluster
-            .maxClusterVertices    = 6,  // 6 vertices per cluster
-            .costUnderfill         = 0.0f,
-            .costOverlap           = 0.0f,
-            .costUnderfillVertices = costUnderfillVertices,
-            .itemVertexCount       = 4,  // 4 vertices per quad
-            .preSplitThreshold     = 0,
+                           .minClusterSize = 1,
+                           .maxClusterSize = 4,  // Should not result in 4 or even 3, because that would exceed 6 vertices per cluster
+                           .maxClusterVertices    = 6,  // 6 vertices per cluster
+                           .costUnderfill         = 0.0f,
+                           .costOverlap           = 0.0f,
+                           .costUnderfillVertices = costUnderfillVertices,
+                           .itemVertexCount       = 4,  // 4 vertices per quad
+                           .preSplitThreshold     = 0,
         },
         boundingBoxes,
         centroids,
+        oneSegment,
         connectionRanges,
         connectionItems,
-        {},
+                       {},
         connectionVertexBits,
     });
     sortClusters(clustering);
@@ -1132,7 +1139,7 @@ TEST(Clusters, ZeroMaxVertex)
 
 TEST(Utils, MeshConnectionsQuad)
 {
-  GeometryMesh    mesh{{}, {{0, 1, 2}, {0, 2, 3}}, {{}, {}, {}, {}}};
+  GeometryMesh               mesh{{}, {{0, 1, 2}, {0, 2, 3}}, {{}, {}, {}, {}}};
   nvcluster::MeshConnections connections = makeMeshConnections(true, mesh);
   ASSERT_EQ(connections.connectionRanges.size(), 2);
   ASSERT_EQ(connections.connectionItems.size(), 2);
@@ -1147,7 +1154,7 @@ TEST(Utils, MeshConnectionsQuad)
 
 TEST(Utils, MeshConnectionsEdge)
 {
-  GeometryMesh    mesh{{}, {{0, 1, 2}, {3, 4, 5}, {2, 6, 7}, {6, 7, 8}}, {{}, {}, {}, {}, {}, {}, {}, {}, {}}};
+  GeometryMesh mesh{{}, {{0, 1, 2}, {3, 4, 5}, {2, 6, 7}, {6, 7, 8}}, {{}, {}, {}, {}, {}, {}, {}, {}, {}}};
   nvcluster::MeshConnections connections = makeMeshConnections(true, mesh);
   ASSERT_EQ(connections.connectionRanges.size(), 4);
   ASSERT_EQ(connections.connectionItems.size(), 4);
@@ -1204,10 +1211,12 @@ TEST(MaxVertex, Icosphere)
           .itemVertexCount       = 3,
           .preSplitThreshold     = 0,
       };
-      ClusterStorage clustering(nvcluster::Input{
+      std::vector<nvcluster::Range> oneSegment{{0, uint32_t(boundingBoxes.size())}};
+      ClusterStorage                clustering(nvcluster::Input{
           config,
           boundingBoxes,
           centroids,
+          oneSegment,
           connections.connectionRanges,
           connections.connectionItems,
           maxVertices % 2 == 0 ? std::span<const float>(connectionWeights) : std::span<const float>(),  // exercise optional weights
@@ -1325,4 +1334,99 @@ TEST(VertexLimit, Underfill)
     }
     //printf("n: %f, c: %f, clusterCount: %f, verticesPerCluster: %f, availableVertices: %f, underfill: %f\n", n, c, clusterCount, verticesPerCluster, availableVertices, underfill);
   }
+}
+
+TEST(ParallelAlgorithms, ForEachIsParallel)
+{
+  constexpr size_t          N = 10;
+  std::vector<int>          data(N, 0);
+  std::set<std::thread::id> thread_ids;
+  std::mutex                mtx;
+  std::vector<int>          one({0});
+  std::for_each(std::execution::seq, one.begin(), one.end(), [&](int&) {
+    std::for_each(std::execution::par_unseq, data.begin(), data.end(), [&](int& x) {
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ++x;
+        std::lock_guard<std::mutex> lock(mtx);
+        thread_ids.insert(std::this_thread::get_id());
+      }
+    });
+  });
+
+  // At least two unique thread IDs should be seen for parallel execution
+  EXPECT_GE(thread_ids.size(), 2u);
+}
+
+TEST(ParallelAlgorithms, ExclusiveScanIsParallel)
+{
+  constexpr size_t          N = 10;
+  std::vector<int>          data(N, 1);
+  std::vector<int>          output(N, 0);
+  std::set<std::thread::id> thread_ids;
+  std::mutex                mtx;
+
+  std::exclusive_scan(std::execution::par_unseq, data.begin(), data.end(), output.begin(), 0, [&](int a, int b) {
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::lock_guard<std::mutex> lock(mtx);
+      thread_ids.insert(std::this_thread::get_id());
+    }
+    return a + b;
+  });
+
+  EXPECT_GE(thread_ids.size(), 2u);
+}
+
+TEST(ParallelAlgorithms, TransformExclusiveScanIsParallel)
+{
+  constexpr size_t          N = 10;
+  std::vector<int>          data(N, 1);
+  std::vector<int>          indirect(N, 1);
+  std::vector<int>          output(N, 0);
+  std::set<std::thread::id> thread_ids;
+  std::mutex                mtx;
+  std::iota(indirect.begin(), indirect.end(), 0);
+
+  std::transform_exclusive_scan(std::execution::par_unseq, indirect.begin(), indirect.end(), output.begin(), 0,
+                                std::plus<int>(), [&](int x) {
+                                  {
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                                    std::lock_guard<std::mutex> lock(mtx);
+                                    thread_ids.insert(std::this_thread::get_id());
+                                  }
+                                  return data[x];
+                                });
+
+  EXPECT_GE(thread_ids.size(), 2u);
+}
+
+TEST(ParallelAlgorithms, TransformReduceIsParallel)
+{
+  constexpr size_t          N = 10;
+  std::vector<int>          data1(N, 1);
+  std::vector<int>          data2(N, 2);
+  std::set<std::thread::id> thread_ids;
+  std::mutex                mtx;
+
+  (void)std::transform_reduce(
+      std::execution::par_unseq, data1.begin(), data1.end(), data2.begin(), 0,
+      [&](int a, int b) {
+        {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          std::lock_guard<std::mutex> lock(mtx);
+          thread_ids.insert(std::this_thread::get_id());
+        }
+        return a + b;
+      },
+      [&](int a, int b) {
+        {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          std::lock_guard<std::mutex> lock(mtx);
+          thread_ids.insert(std::this_thread::get_id());
+        }
+        return a * b;
+      });
+
+  EXPECT_GE(thread_ids.size(), 2u);
 }

@@ -133,6 +133,8 @@ struct ClusterStorage : nvcluster::ClusterStorage
   // Internal interface, for unit testing
   ClusterStorage(const nvcluster::Input& input)
   {
+    if(input.segments.size() != 1)
+      throw std::runtime_error("segmented clustering not implemented in this test");
     nvcluster_Counts requiredCounts;
     check(nvclusterGetRequirements(ScopedContext(), &input.config, uint32_t(input.boundingBoxes.size()), &requiredCounts));
     clusterItemRanges.resize(requiredCounts.clusterCount);
@@ -141,7 +143,10 @@ struct ClusterStorage : nvcluster::ClusterStorage
                                     .items             = items.data(),
                                     .clusterCount      = uint32_t(clusterItemRanges.size()),
                                     .itemCount         = uint32_t(items.size())};
-    check(clusterize(true, input, nvcluster::OutputClusters(output)));
+    nvcluster_Range          outputSegment{};
+    check(clusterize(true, input, nvcluster::OutputClusters(output, &outputSegment, 1)));
+    if(outputSegment.offset != 0 || size_t(outputSegment.count) != output.clusterCount)
+      throw std::runtime_error("expected one segment with everything");
     clusterItemRanges.resize(output.clusterCount);
     items.resize(output.itemCount);
   }

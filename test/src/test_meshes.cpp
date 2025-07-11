@@ -119,7 +119,7 @@ void testVertexUnderfill1(const GeometryMesh& mesh)
   auto maxVertexTests = std::to_array<uint32_t>({0xffffffffu, 13, 32, 64});
   for(auto maxTriangles : std::to_array<uint32_t>({32, 64, 128}))
   {
-    uint32_t                                    noMaximumClusterCount = 0;
+    uint32_t noMaximumClusterCount = 0;
     std::array<uint32_t, maxVertexTests.size()> overflowWithoutLimit = {};  // Counts of clusters that would overflow the vertex limit if one was not set
     std::array<uint32_t, maxVertexTests.size()> totalClusters = {};  // Total cluster count for each maxVertices test
     for(size_t maxVerticesIndex = 0; maxVerticesIndex < maxVertexTests.size(); ++maxVerticesIndex)
@@ -134,22 +134,24 @@ void testVertexUnderfill1(const GeometryMesh& mesh)
         // Cluster the mesh
         SCOPED_TRACE("Max triangles " + std::to_string(maxTriangles) + " vertices " + std::to_string(maxVertices)
                      + " vertex underfill cost " + std::to_string(costUnderfillVertices));
-        ClusterStorage clustering(nvcluster::Input{
+        std::vector<nvcluster::Range> oneSegment{{0, uint32_t(boundingBoxes.size())}};
+        ClusterStorage                clustering(nvcluster::Input{
             nvcluster_Config{
-                .minClusterSize        = 1,
-                .maxClusterSize        = maxTriangles,
-                .maxClusterVertices    = maxVertices,
-                .costUnderfill         = 0.1f,
-                .costOverlap           = 0.1f,
-                .costUnderfillVertices = costUnderfillVertices,
-                .itemVertexCount       = 3,
-                .preSplitThreshold     = 0,
+                               .minClusterSize        = 1,
+                               .maxClusterSize        = maxTriangles,
+                               .maxClusterVertices    = maxVertices,
+                               .costUnderfill         = 0.1f,
+                               .costOverlap           = 0.1f,
+                               .costUnderfillVertices = costUnderfillVertices,
+                               .itemVertexCount       = 3,
+                               .preSplitThreshold     = 0,
             },
             boundingBoxes,
             centroids,
+            oneSegment,
             connections.connectionRanges,
             connections.connectionItems,
-            {},
+                           {},
             connections.connectionVertexBits,
         });
 
@@ -329,13 +331,13 @@ float testVertexUnderfill2(const GeometryMesh& mesh, float connectionWeight = 0.
     uint32_t overflowWithoutLimit = 0;
 
     // Total clusters with/without vertex limit
-    uint32_t clusterCountWithoutLimit = 0;
-    uint32_t clusterCountWithLimit    = 0;
+    uint32_t clusterCountWithoutLimit          = 0;
+    uint32_t clusterCountWithLimit             = 0;
     uint32_t clusterCountWithLimitAndUnderfill = 0;
 
     // Total SAH cost of all clusters with/without vertex limit
-    float sahCostWithoutLimit = 0.0f;
-    float sahCostWithLimit    = 0.0f;
+    float sahCostWithoutLimit          = 0.0f;
+    float sahCostWithLimit             = 0.0f;
     float sahCostWithLimitAndUnderfill = 0.0f;
 
     // Cluster the geometry three times:
@@ -356,10 +358,12 @@ float testVertexUnderfill2(const GeometryMesh& mesh, float connectionWeight = 0.
           .itemVertexCount       = 3,
           .preSplitThreshold     = 0,
       };
-      ClusterStorage clustering(nvcluster::Input{
+      std::vector<nvcluster::Range> oneSegment{{0, uint32_t(boundingBoxes.size())}};
+      ClusterStorage                clustering(nvcluster::Input{
           config,
           boundingBoxes,
           centroids,
+          oneSegment,
           connections.connectionRanges,
           connections.connectionItems,
           connectionWeights,  // may be empty
@@ -371,7 +375,7 @@ float testVertexUnderfill2(const GeometryMesh& mesh, float connectionWeight = 0.
       auto& vertexCountHistogram = i == 0 ? vertexCountHistogramWithoutLimit :
                                             (i == 1 ? vertexCountHistogramWithLimit : vertexCountHistogramWithLimitAndUnderfill);
       auto& sahCost = i == 0 ? sahCostWithoutLimit : (i == 1 ? sahCostWithLimit : sahCostWithLimitAndUnderfill);
-      clusterCount               = uint32_t(clustering.clusterItemRanges.size());
+      clusterCount  = uint32_t(clustering.clusterItemRanges.size());
       vertexCountHistogram.resize(config.itemVertexCount * maxTriangles + 1, 0u);
       for(nvcluster_Range r : clustering.clusterItemRanges)
       {
@@ -532,10 +536,12 @@ float testItemUnderfill(const GeometryMesh& mesh, uint32_t maxTriangles)
         .itemVertexCount       = 3,
         .preSplitThreshold     = 0,
     };
-    ClusterStorage clustering(nvcluster::Input{
+    std::vector<nvcluster::Range> oneSegment{{0, uint32_t(boundingBoxes.size())}};
+    ClusterStorage                clustering(nvcluster::Input{
         config,
         boundingBoxes,
         centroids,
+        oneSegment,
     });
 
     // Compute the histogram of triangle counts

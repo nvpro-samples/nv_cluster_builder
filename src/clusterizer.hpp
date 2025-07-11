@@ -33,10 +33,11 @@ inline MeshConnections makeMeshConnections(bool parallelize, const nvcluster_Con
 
 struct Input
 {
-  Input(const nvcluster_Config& inputConfig, const nvcluster_Input& input)
+  Input(const nvcluster_Config& inputConfig, const nvcluster_Input& input, const nvcluster_Segments& inputSegments)
       : Input(inputConfig,
               std::span(reinterpret_cast<const AABB*>(input.itemBoundingBoxes), input.itemCount),
               std::span(reinterpret_cast<const vec3f*>(input.itemCentroids), input.itemCount),
+              std::span(reinterpret_cast<const Range*>(inputSegments.segmentItemRanges), inputSegments.segmentCount),
               maybeNull(reinterpret_cast<const Range*>(input.itemConnectionRanges), input.itemCount),
               maybeNull(input.connectionTargetItems, input.connectionCount),
               maybeNull(input.connectionWeights, input.connectionCount),
@@ -44,10 +45,11 @@ struct Input
   {
   }
 
-  Input(const nvcluster_Config& inputConfig, const nvcluster_Input& input, const MeshConnections& meshConnections)
+  Input(const nvcluster_Config& inputConfig, const nvcluster_Input& input, const nvcluster_Segments& inputSegments, const MeshConnections& meshConnections)
       : Input(inputConfig,
               std::span(reinterpret_cast<const AABB*>(input.itemBoundingBoxes), input.itemCount),
               std::span(reinterpret_cast<const vec3f*>(input.itemCentroids), input.itemCount),
+              std::span(reinterpret_cast<const Range*>(inputSegments.segmentItemRanges), inputSegments.segmentCount),
               meshConnections.connectionRanges,
               meshConnections.connectionItems,
               {},  // incompatible with auto-computed connections
@@ -58,6 +60,7 @@ struct Input
   Input(const nvcluster_Config&               config_,
         std::span<const AABB>                 boundingBoxes_,
         std::span<const vec3f>                centroids_,
+        std::span<const Range>                segments_,
         std::span<const Range>                itemConnectionRanges_  = {},
         std::span<const uint32_t>             connectionTargetItems_ = {},
         std::span<const float>                connectionWeights_     = {},
@@ -65,6 +68,7 @@ struct Input
       : config(config_)
       , boundingBoxes(boundingBoxes_)
       , centroids(centroids_)
+      , segments(segments_)
       , itemConnectionRanges(itemConnectionRanges_)
       , connectionTargetItems(connectionTargetItems_)
       , connectionWeights(connectionWeights_)
@@ -72,12 +76,17 @@ struct Input
   {
     // NOTE: validation is done by the C API and none here to avoid throwing
     // more exceptions than the standard library already does, e.g. bad_alloc
+    assert(!segments.empty());
+    assert(segments.size() > 1 || segments.front().count == boundingBoxes.size());
   }
 
   // Minimal spatial-only input
   const nvcluster_Config& config;
   std::span<const AABB>   boundingBoxes;
   std::span<const vec3f>  centroids;
+
+  // Clusterize within each range of items
+  std::span<const Range> segments;
 
   // Optional connections (may be empty)
   std::span<const Range>                itemConnectionRanges;
@@ -95,15 +104,18 @@ private:
 
 struct OutputClusters
 {
-  OutputClusters(nvcluster_OutputClusters& output)
+  OutputClusters(nvcluster_OutputClusters& output, nvcluster_Range* outputSegments, uint32_t outputSegmentCount)
       : clusterItemRanges(reinterpret_cast<Range*>(output.clusterItemRanges), output.clusterCount)
       , items(reinterpret_cast<uint32_t*>(output.items), output.itemCount)
+      , segments(reinterpret_cast<Range*>(outputSegments), outputSegmentCount)
       , clusterCount(output.clusterCount)
       , itemCount(output.itemCount)
   {
+    assert(!segments.empty());
   }
   std::span<Range>    clusterItemRanges;
   std::span<uint32_t> items;
+  std::span<Range>    segments;
   uint32_t&           clusterCount;  // output count reference
   uint32_t&           itemCount;     // output count reference
 };
