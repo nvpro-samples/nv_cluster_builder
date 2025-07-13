@@ -98,7 +98,7 @@ private:
   T*       stackData() { return reinterpret_cast<T*>(&m_stackData); }
   const T* stackData() const { return reinterpret_cast<const T*>(&m_stackData); }
 
-  std::aligned_storage_t<sizeof(std::array<T, N>), alignof(std::array<T, N>)> m_stackData;
+  alignas(std::array<T, N>) std::byte m_stackData[sizeof(std::array<T, N>)] = {};
 
   std::vector<T> m_heapData;
   size_t         m_size = 0;
