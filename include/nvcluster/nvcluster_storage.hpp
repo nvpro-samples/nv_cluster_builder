@@ -30,6 +30,13 @@ struct ClusterStorage
 {
   std::vector<nvcluster_Range> clusterItemRanges;
   std::vector<uint32_t>        items;
+
+  void shrink_to_fit()
+  {
+    // clusterItemRanges is conservatively sized for clustering output. If this
+    // object is kept around, memory can be saved by reallocating.
+    clusterItemRanges.shrink_to_fit();
+  }
 };
 
 // Utility storage for segmented clustering output
@@ -39,6 +46,13 @@ struct SegmentedClusterStorage
   std::vector<nvcluster_Range> segmentClusterRanges;
   std::vector<nvcluster_Range> clusterItemRanges;
   std::vector<uint32_t>        items;
+
+  void shrink_to_fit()
+  {
+    // clusterItemRanges is conservatively sized for clustering output. If this
+    // object is kept around, memory can be saved by reallocating.
+    clusterItemRanges.shrink_to_fit();
+  }
 };
 
 // ClusterStorage delayed init constructor
@@ -57,7 +71,7 @@ inline nvcluster_Result generateClusters(nvcluster_Context       context,
 
   // Resize to the upper limit
   clusterStorage.clusterItemRanges.resize(requiredCounts.clusterCount);
-  clusterStorage.items.resize(requiredCounts.itemCount);
+  clusterStorage.items.resize(input.itemCount);
 
   // Build clusters
   nvcluster_OutputClusters outputClusters{
@@ -72,9 +86,9 @@ inline nvcluster_Result generateClusters(nvcluster_Context       context,
     return result;
   }
 
-  // Resize down to what was written
+  // Resize down to what was written. Let the user call shrink_to_fit() if the
+  // object is not temporary.
   clusterStorage.clusterItemRanges.resize(outputClusters.clusterCount);
-  clusterStorage.items.resize(outputClusters.itemCount);
   return result;
 }
 
@@ -95,7 +109,7 @@ inline nvcluster_Result generateSegmentedClusters(nvcluster_Context         cont
   // Resize to the upper limit
   segmentedClusterStorage.segmentClusterRanges.resize(segments.segmentCount);
   segmentedClusterStorage.clusterItemRanges.resize(requiredCounts.clusterCount);
-  segmentedClusterStorage.items.resize(requiredCounts.itemCount);
+  segmentedClusterStorage.items.resize(input.itemCount);
 
   // Build clusters
   nvcluster_OutputClusters outputClusters{
@@ -111,9 +125,9 @@ inline nvcluster_Result generateSegmentedClusters(nvcluster_Context         cont
     return result;
   }
 
-  // Resize down to what was written
+  // Resize down to what was written. Let the user call shrink_to_fit() if the
+  // object is not temporary.
   segmentedClusterStorage.clusterItemRanges.resize(outputClusters.clusterCount);
-  segmentedClusterStorage.items.resize(outputClusters.itemCount);
   return result;
 }
 

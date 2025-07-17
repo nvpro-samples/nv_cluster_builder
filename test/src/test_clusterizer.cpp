@@ -81,14 +81,12 @@ TEST(Config, ExactCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 10, .maxClusterSize = 10};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
     EXPECT_EQ(counts.clusterCount, 9);
   }
   {
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 10, .maxClusterSize = 10};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 91, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 91);
     EXPECT_EQ(counts.clusterCount, 10);
   }
 }
@@ -99,14 +97,12 @@ TEST(Config, RangeCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 5, .maxClusterSize = 10};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
     EXPECT_EQ(counts.clusterCount, 18);
   }
   {
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 5, .maxClusterSize = 10};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 91, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 91);
     EXPECT_EQ(counts.clusterCount, 19);
   }
 }
@@ -117,7 +113,6 @@ TEST(Config, PresplitCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 5, .maxClusterSize = 10, .preSplitThreshold = 89};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
 
     // 18 full clusters plus two possibly non-full due to pre-split
     EXPECT_EQ(counts.clusterCount, 20);
@@ -126,7 +121,6 @@ TEST(Config, PresplitCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 5, .maxClusterSize = 10, .preSplitThreshold = 10};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
 
     // 18 full clusters plus 9 possibly non-full due to pre-split
     EXPECT_EQ(counts.clusterCount, 27);
@@ -135,7 +129,6 @@ TEST(Config, PresplitCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 10, .maxClusterSize = 10, .preSplitThreshold = 89};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
 
     // 9 full clusters plus two possibly non-full due to pre-split
     EXPECT_EQ(counts.clusterCount, 11);
@@ -144,7 +137,6 @@ TEST(Config, PresplitCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 10, .maxClusterSize = 10, .preSplitThreshold = 5};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
 
     // 9 full clusters plus 18 possibly non-full due to pre-split
     EXPECT_EQ(counts.clusterCount, 27);
@@ -157,7 +149,6 @@ TEST(Config, VertexLimitedCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 5, .maxClusterSize = 10, .maxClusterVertices = 11, .itemVertexCount = 3};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
 
     // There is no minClusterVertices and minClusterSize is ignored when
     // maxClusterVertices is set
@@ -167,7 +158,6 @@ TEST(Config, VertexLimitedCount)
     nvcluster_Counts counts;
     nvcluster_Config config{.minClusterSize = 5, .maxClusterSize = 10, .maxClusterVertices = 12, .itemVertexCount = 3};
     EXPECT_EQ(nvclusterGetRequirements(ScopedContext(), &config, 90, &counts), nvcluster_Result::NVCLUSTER_SUCCESS);
-    EXPECT_EQ(counts.itemCount, 90);
 
     // There is no minClusterVertices and minClusterSize is ignored when
     // maxClusterVertices is set
@@ -379,6 +369,111 @@ TEST(Clusters, EmptyConnections)
   ASSERT_EQ(clustering.clusterItemRanges.size(), 2);
   ASSERT_EQ(clustering.items.size(), 4);
 };
+
+TEST(Clusters, EmptyInput)
+{
+  // Test clustering with zero items
+  std::vector<nvcluster::AABB> boundingBoxes;
+  std::vector<vec3f>           centroids;
+  nvcluster_Input              input{
+                   .itemBoundingBoxes     = reinterpret_cast<nvcluster_AABB*>(boundingBoxes.data()),
+                   .itemCentroids         = reinterpret_cast<nvcluster_Vec3f*>(centroids.data()),
+                   .itemCount             = 0,
+                   .itemConnectionRanges  = nullptr,
+                   .connectionTargetItems = nullptr,
+                   .connectionWeights     = nullptr,
+                   .connectionCount       = 0,
+  };
+  nvcluster_Config config{
+      .minClusterSize    = 1,
+      .maxClusterSize    = 2,
+      .costUnderfill     = 0.0f,
+      .costOverlap       = 0.0f,
+      .preSplitThreshold = 0,
+  };
+
+  ScopedContext             context;
+  nvcluster::ClusterStorage clustering;
+  nvcluster_Result          result = nvcluster::generateClusters(context.context, config, input, clustering);
+  ASSERT_EQ(result, nvcluster_Result::NVCLUSTER_SUCCESS);
+  ASSERT_EQ(clustering.clusterItemRanges.size(), 0);
+  ASSERT_EQ(clustering.items.size(), 0);
+}
+
+TEST(Clusters, EmptySegmentedInput)
+{
+  // Test clustering with zero items and zero segments
+  std::vector<nvcluster::AABB> boundingBoxes;
+  std::vector<vec3f>           centroids;
+  std::vector<nvcluster_Range> segments;  // empty
+
+  nvcluster_Input input{
+      .itemBoundingBoxes     = reinterpret_cast<nvcluster_AABB*>(boundingBoxes.data()),
+      .itemCentroids         = reinterpret_cast<nvcluster_Vec3f*>(centroids.data()),
+      .itemCount             = 0,
+      .itemConnectionRanges  = nullptr,
+      .connectionTargetItems = nullptr,
+      .connectionWeights     = nullptr,
+      .connectionCount       = 0,
+  };
+  nvcluster_Config config{
+      .minClusterSize    = 1,
+      .maxClusterSize    = 2,
+      .costUnderfill     = 0.0f,
+      .costOverlap       = 0.0f,
+      .preSplitThreshold = 0,
+  };
+
+  ScopedContext                      context;
+  nvcluster::SegmentedClusterStorage clustering;
+  nvcluster_Result                   result =
+      nvcluster::generateSegmentedClusters(context.context, config, input,
+                                           {segments.data(), static_cast<uint32_t>(segments.size())}, clustering);
+  ASSERT_EQ(result, nvcluster_Result::NVCLUSTER_SUCCESS);
+  ASSERT_EQ(clustering.clusterItemRanges.size(), 0);
+  ASSERT_EQ(clustering.items.size(), 0);
+}
+
+TEST(Clusters, OneItemEmptySegment)
+{
+  // Test with one item, but the only segment is empty (does not reference the item)
+  std::vector<nvcluster::AABB> boundingBoxes{
+      {{0, 0, 0}, {1, 1, 1}},
+  };
+  std::vector<vec3f> centroids{
+      boundingBoxes[0].center(),
+  };
+  // Segment does not reference the item (offset=0, count=0)
+  std::vector<nvcluster_Range> segments{
+      {0, 0},
+  };
+
+  nvcluster_Input input{
+      .itemBoundingBoxes     = reinterpret_cast<nvcluster_AABB*>(boundingBoxes.data()),
+      .itemCentroids         = reinterpret_cast<nvcluster_Vec3f*>(centroids.data()),
+      .itemCount             = static_cast<uint32_t>(boundingBoxes.size()),
+      .itemConnectionRanges  = nullptr,
+      .connectionTargetItems = nullptr,
+      .connectionWeights     = nullptr,
+      .connectionCount       = 0,
+  };
+  nvcluster_Config config{
+      .minClusterSize    = 1,
+      .maxClusterSize    = 2,
+      .costUnderfill     = 0.0f,
+      .costOverlap       = 0.0f,
+      .preSplitThreshold = 0,
+  };
+
+  ScopedContext                      context;
+  nvcluster::SegmentedClusterStorage clustering;
+  nvcluster_Result                   result =
+      nvcluster::generateSegmentedClusters(context.context, config, input,
+                                           {segments.data(), static_cast<uint32_t>(segments.size())}, clustering);
+  ASSERT_EQ(result, nvcluster_Result::NVCLUSTER_SUCCESS);
+  ASSERT_EQ(clustering.clusterItemRanges.size(), 0);
+  ASSERT_EQ(clustering.items.size(), 1);  // unreferenced items still appear in the output
+}
 
 TEST(Clusters, Segmented2x2)
 {
@@ -1075,7 +1170,7 @@ TEST(Clusters, Simple2x2MaxVertex)
         oneSegment,
         connectionRanges,
         connectionItems,
-                       {},
+        {},
         connectionVertexBits,
     });
     sortClusters(clustering);

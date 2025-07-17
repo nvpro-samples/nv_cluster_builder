@@ -138,7 +138,7 @@ struct ClusterStorage : nvcluster::ClusterStorage
     nvcluster_Counts requiredCounts;
     check(nvclusterGetRequirements(ScopedContext(), &input.config, uint32_t(input.boundingBoxes.size()), &requiredCounts));
     clusterItemRanges.resize(requiredCounts.clusterCount);
-    items.resize(requiredCounts.itemCount);
+    items.resize(input.boundingBoxes.size());
     nvcluster_OutputClusters output{.clusterItemRanges = clusterItemRanges.data(),
                                     .items             = items.data(),
                                     .clusterCount      = uint32_t(clusterItemRanges.size()),
@@ -148,7 +148,6 @@ struct ClusterStorage : nvcluster::ClusterStorage
     if(outputSegment.offset != 0 || size_t(outputSegment.count) != output.clusterCount)
       throw std::runtime_error("expected one segment with everything");
     clusterItemRanges.resize(output.clusterCount);
-    items.resize(output.itemCount);
   }
 };
 

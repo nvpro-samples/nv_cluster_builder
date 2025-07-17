@@ -76,8 +76,6 @@ struct Input
   {
     // NOTE: validation is done by the C API and none here to avoid throwing
     // more exceptions than the standard library already does, e.g. bad_alloc
-    assert(!segments.empty());
-    assert(segments.size() > 1 || segments.front().count == boundingBoxes.size());
   }
 
   // Minimal spatial-only input
@@ -111,7 +109,6 @@ struct OutputClusters
       , clusterCount(output.clusterCount)
       , itemCount(output.itemCount)
   {
-    assert(!segments.empty());
   }
   std::span<Range>    clusterItemRanges;
   std::span<uint32_t> items;

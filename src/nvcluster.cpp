@@ -43,6 +43,7 @@ const char* nvclusterResultString(nvcluster_Result result)
   case NVCLUSTER_ERROR_INVALID_OUTPUT_ITEM_INDICES_SIZE: return "NVCLUSTER_ERROR_INVALID_OUTPUT_ITEM_INDICES_SIZE";
   case NVCLUSTER_ERROR_SPATIAL_AND_CONNECTIONS_ITEM_COUNT_MISMATCH: return "NVCLUSTER_ERROR_SPATIAL_AND_CONNECTIONS_ITEM_COUNT_MISMATCH";
   case NVCLUSTER_ERROR_SEGMENT_AND_ITEM_COUNT_CONTRADICTION: return "NVCLUSTER_ERROR_SEGMENT_AND_ITEM_COUNT_CONTRADICTION";
+  case NVCLUSTER_ERROR_SEGMENT_COUNT_MISMATCH: return "NVCLUSTER_ERROR_SEGMENT_COUNT_MISMATCH";
   case NVCLUSTER_ERROR_MAX_CLUSTER_VERTICES_WITHOUT_CONNECTION_BITS: return "NVCLUSTER_ERROR_MAX_CLUSTER_VERTICES_WITHOUT_CONNECTION_BITS";
   case NVCLUSTER_ERROR_MAX_VERTICES_LESS_THAN_ITEM_VERTICES: return "NVCLUSTER_ERROR_MAX_VERTICES_LESS_THAN_ITEM_VERTICES";
   case NVCLUSTER_ERROR_NO_CONNECTION_ATTRIBUTES: return "NVCLUSTER_ERROR_NO_CONNECTION_ATTRIBUTES";
@@ -54,11 +55,6 @@ const char* nvclusterResultString(nvcluster_Result result)
   case NVCLUSTER_ERROR_NULL_INPUT: return "NVCLUSTER_ERROR_NULL_INPUT";
   case NVCLUSTER_ERROR_NULL_CONTEXT: return "NVCLUSTER_ERROR_NULL_CONTEXT";
   case NVCLUSTER_ERROR_NULL_OUTPUT: return "NVCLUSTER_ERROR_NULL_OUTPUT";
-  case NVCLUSTER_ERROR_WEIGHT_OVERFLOW: return "NVCLUSTER_ERROR_WEIGHT_OVERFLOW";
-  case NVCLUSTER_ERROR_INTERNAL_SEGMENTED_ITEM_PACKING: return "NVCLUSTER_ERROR_INTERNAL_SEGMENTED_ITEM_PACKING";
-  case NVCLUSTER_ERROR_INTERNAL_SEGMENTED_CLUSTER_PACKING: return "NVCLUSTER_ERROR_INTERNAL_SEGMENTED_CLUSTER_PACKING";
-  case NVCLUSTER_ERROR_INTERNAL_INVALID_SPLIT_POSITION: return "NVCLUSTER_ERROR_INTERNAL_INVALID_SPLIT_POSITION";
-  case NVCLUSTER_ERROR_INTERNAL_EMPTY_NODE: return "NVCLUSTER_ERROR_INTERNAL_EMPTY_NODE";
   case NVCLUSTER_ERROR_INTERNAL_MULTIPLE_UNDERFLOW: return "NVCLUSTER_ERROR_INTERNAL_MULTIPLE_UNDERFLOW";
   default: return "<Invalid nvcluster_Result>";
   }
@@ -78,7 +74,7 @@ nvcluster_Result nvclusterCreateContext(const nvcluster_ContextCreateInfo* creat
   }
   if(context == nullptr)
   {
-    return nvcluster_Result::NVCLUSTER_ERROR_NULL_OUTPUT;
+    return nvcluster_Result::NVCLUSTER_ERROR_NULL_CONTEXT;
   }
   if(createInfo->version != NVCLUSTER_VERSION)
   {
@@ -152,7 +148,6 @@ nvcluster_Result nvclusterGetRequirements(nvcluster_Context context, const nvclu
 
   *outputRequiredCounts = nvcluster_Counts{
       .clusterCount = uint32_t(maxClusters),
-      .itemCount    = uint32_t(n),
   };
 
   return nvcluster_Result::NVCLUSTER_SUCCESS;
@@ -165,6 +160,15 @@ inline nvcluster_Result buildMaybeWithConnections(nvcluster_Context         cont
                                                   const nvcluster_Segments* segments             = nullptr,
                                                   nvcluster_Range*          segmentClusterRanges = nullptr)
 {
+  if(input->itemCount && !input->itemBoundingBoxes)
+  {
+    return nvcluster_Result::NVCLUSTER_ERROR_MISSING_SPATIAL_BOUNDING_BOXES;
+  }
+  if(input->itemCount && !input->itemCentroids)
+  {
+    return nvcluster_Result::NVCLUSTER_ERROR_MISSING_SPATIAL_CENTROIDS;
+  }
+
   // API permutation consistency checks
   if(input->itemVertices)
   {
@@ -263,11 +267,6 @@ nvcluster_Result nvclusterBuild(nvcluster_Context context, const nvcluster_Confi
     return nvcluster_Result::NVCLUSTER_ERROR_NULL_OUTPUT;
   }
 
-  // Assume the user passes in correctly sized arrays and hasn't changed the
-  // config since
-  nvcluster_Counts expectedOutputSizes;
-  std::ignore = nvclusterGetRequirements(context, config, input->itemCount, &expectedOutputSizes);
-
   return buildMaybeWithConnections(context, config, input, outputClusters);
 }
 
@@ -290,9 +289,7 @@ nvcluster_Result nvclusterGetRequirementsSegmented(nvcluster_Context         con
     return nvcluster_Result::NVCLUSTER_ERROR_NULL_OUTPUT;
   }
 
-  uint32_t outputItemCount    = 0u;
   uint32_t outputClusterCount = 0u;
-
   for(uint32_t itemSegmentIndex = 0; itemSegmentIndex < segments->segmentCount; itemSegmentIndex++)
   {
     const nvcluster_Range& segmentItemRange = segments->segmentItemRanges[itemSegmentIndex];
@@ -306,12 +303,10 @@ nvcluster_Result nvclusterGetRequirementsSegmented(nvcluster_Context         con
     {
       return res;
     }
-    outputItemCount += segmentResult.itemCount;
     outputClusterCount += segmentResult.clusterCount;
   }
   *outputRequiredCounts = nvcluster_Counts{
       .clusterCount = outputClusterCount,
-      .itemCount    = outputItemCount,
   };
 
   return nvcluster_Result::NVCLUSTER_SUCCESS;
@@ -335,10 +330,13 @@ nvcluster_Result nvclusterBuildSegmented(nvcluster_Context         context,
   {
     return nvcluster_Result::NVCLUSTER_ERROR_NULL_INPUT;
   }
-  if(outputClusters == nullptr || segmentClusterRanges == nullptr)
+  if(outputClusters == nullptr)
   {
     return nvcluster_Result::NVCLUSTER_ERROR_NULL_OUTPUT;
   }
-
+  if(segments->segmentCount && segmentClusterRanges == nullptr)
+  {
+    return nvcluster_Result::NVCLUSTER_ERROR_NULL_OUTPUT;
+  }
   return buildMaybeWithConnections(context, config, input, outputClusters, segments, segmentClusterRanges);
 }

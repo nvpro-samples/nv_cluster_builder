@@ -72,6 +72,7 @@ typedef enum nvcluster_Result
   NVCLUSTER_ERROR_INVALID_OUTPUT_ITEM_INDICES_SIZE,
   NVCLUSTER_ERROR_SPATIAL_AND_CONNECTIONS_ITEM_COUNT_MISMATCH,
   NVCLUSTER_ERROR_SEGMENT_AND_ITEM_COUNT_CONTRADICTION,
+  NVCLUSTER_ERROR_SEGMENT_COUNT_MISMATCH,
   NVCLUSTER_ERROR_MAX_CLUSTER_VERTICES_WITHOUT_CONNECTION_BITS,
   NVCLUSTER_ERROR_MAX_VERTICES_LESS_THAN_ITEM_VERTICES,
   NVCLUSTER_ERROR_NO_CONNECTION_ATTRIBUTES,
@@ -83,13 +84,8 @@ typedef enum nvcluster_Result
   NVCLUSTER_ERROR_NULL_INPUT,
   NVCLUSTER_ERROR_NULL_CONTEXT,
   NVCLUSTER_ERROR_NULL_OUTPUT,
-  NVCLUSTER_ERROR_WEIGHT_OVERFLOW,
 
   // These likely indicate a bug with the library
-  NVCLUSTER_ERROR_INTERNAL_SEGMENTED_ITEM_PACKING,
-  NVCLUSTER_ERROR_INTERNAL_SEGMENTED_CLUSTER_PACKING,
-  NVCLUSTER_ERROR_INTERNAL_INVALID_SPLIT_POSITION,
-  NVCLUSTER_ERROR_INTERNAL_EMPTY_NODE,
   NVCLUSTER_ERROR_INTERNAL_MULTIPLE_UNDERFLOW,
 } nvcluster_Result;
 
@@ -245,7 +241,8 @@ typedef struct nvcluster_Input
 } nvcluster_Input;
 
 // Optionally divide items to cluster into segments and cluster within each
-// segment in a single API call.
+// segment in a single API call. Segments must not overlap. Unreferenced items
+// will still appear in nvcluster_OutputClusters::items.
 typedef struct nvcluster_Segments
 {
   // Each segment defines range of items to cluster within
@@ -258,11 +255,10 @@ typedef struct nvcluster_Segments
 // Clustering output counts. For example, nvclusterGetRequirements() will first
 // write the upper limit of generated clusters. This must be used to size the
 // allocation given to e.g. nvclusterBuild(), which will write the
-// exact cluster count written. itemCount is trivially the input itemCount.
+// exact cluster count written.
 typedef struct nvcluster_Counts
 {
   uint32_t clusterCount NVCLUSTER_DEFAULT(0u);
-  uint32_t itemCount    NVCLUSTER_DEFAULT(0u);
 } nvcluster_Counts;
 
 // Clustering output, defining selections of input items that form clusters
@@ -277,11 +273,11 @@ typedef struct nvcluster_OutputClusters
   uint32_t* items NVCLUSTER_DEFAULT(nullptr);
 
   // Initially the number of elements in clusterItemRanges
-  // The nvclusterBuild*() replaced it with the element count written
+  // The nvclusterBuild*() replaces it with the element count written
   uint32_t clusterCount NVCLUSTER_DEFAULT(0u);
 
   // Initially the number of elements in items
-  // The nvclusterBuild*() replaced it with the element count written
+  // The nvclusterBuild*() replaces it with the element count written
   uint32_t itemCount NVCLUSTER_DEFAULT(0u);
 } nvcluster_OutputClusters;
 

@@ -151,7 +151,7 @@ void testVertexUnderfill1(const GeometryMesh& mesh)
             oneSegment,
             connections.connectionRanges,
             connections.connectionItems,
-                           {},
+            {},
             connections.connectionVertexBits,
         });
 

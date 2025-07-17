@@ -131,14 +131,6 @@ inline Split minSplitCost(Split a, Split b)
   return std::min(a, b);
 }
 
-// Error flags can be set atomically by any thread. This also saves code to
-// propagate error codes in return values.
-struct ErrorFlags
-{
-  std::atomic<bool>     emptyNode          = false;
-  std::atomic<uint32_t> underflowItemCount = 0;
-};
-
 struct NodeRange : Range
 {
   // Track which segment nodes belong to
@@ -185,10 +177,6 @@ struct SplitNodeTemp
   // WARNING: these are global (not node-relative) and subrange() is a passthrough
   std::array<std::span<const uint32_t>, 3> connectionItemsInNodes;
 
-  // Error flags can be set atomically by any thread. This also saves code to
-  // propagate error codes in return values.
-  ErrorFlags& errorFlags;
-
   // Returns the subrange for each array in this structure of arrays, except for
   // partitionSides and connectionItemsInNodes
   template <bool HasConnectionWeights, bool HasVertexLimit>
@@ -222,8 +210,7 @@ struct SplitNodeTemp
                                           connectionItemsInNodes[0] /* NOTE: global, no subspan() */,
                                           connectionItemsInNodes[1] /* NOTE: global, no subspan() */,
                                           connectionItemsInNodes[2] /* NOTE: global, no subspan() */,
-                                      },
-        .errorFlags             = errorFlags,
+                                      }
     };
   }
 };
@@ -789,41 +776,18 @@ Split splitNode(const Input&         input,  // Input items and connections
   return split;
 };
 
-template <bool ThreadSafe>
-void addChildNode(const Input&          input,
-                  ErrorFlags&           errorFlags,
-                  const bool&           nodeComplete,
-                  const NodeRange&      newNode,
-                  std::span<NodeRange>  outNodes,       // Output nodes storage where child nodes will be added
-                  uint32_t&             outNodesAlloc,  // Current number of nodes in the output
-                  const OutputClusters& clusters,
-                  std::span<NodeRange>  results)
+struct NextNodeBatch
 {
-  assert(newNode.count > 0);
-  if(newNode.count == 0)
+  // Output nodes storage where child nodes will be added
+  std::span<NodeRange> outNodes;
+
+  // Current number of nodes in the output
+  uint32_t& outNodesAlloc;
+
+  template <bool ThreadSafe>
+  void push(const NodeRange& newNode)
   {
-    // Empty nodes are a bug
-    errorFlags.emptyNode = true;
-  }
-  else if(nodeComplete)
-  {
-    // Append the node as a cluster
-    if constexpr(ThreadSafe)
-    {
-      uint32_t index = std::atomic_ref(clusters.clusterCount)++;
-      assert(size_t(index) < clusters.clusterItemRanges.size());
-      results[index] = newNode;
-    }
-    else
-    {
-      assert(clusters.clusterCount < clusters.clusterItemRanges.size());
-      results[clusters.clusterCount++] = newNode;
-    }
-    if(newNode.count < input.config.minClusterSize)
-      errorFlags.underflowItemCount++;
-  }
-  else
-  {
+    assert(newNode.count > 0);
     // Node is still too big. Keep splitting it by appending to the next batch.
     if constexpr(ThreadSafe)
     {
@@ -837,25 +801,149 @@ void addChildNode(const Input&          input,
       outNodes[outNodesAlloc++] = newNode;
     }
   }
-}
+};
 
-// Process two nodes from a split node. Both are either added to the next batch
-// for processing or emitted as clusters if complete.
-template <bool ThreadSafe>
-void addChildNodes(const Input&          input,
-                   ErrorFlags&           errorFlags,
-                   const NodeRange&      node,
-                   const Split&          split,
-                   std::span<NodeRange>  outNodes,       // Output nodes storage where child nodes will be added
-                   uint32_t&             outNodesAlloc,  // Current number of nodes in the output
-                   const OutputClusters& clusters,
-                   std::span<NodeRange>  results)
+// Encapsulates clustering output. Since segments will contain variable-size
+// clusters, clusters are first written to temporary storage, then written to
+// the output in segment order. If there is only one segment, we can instead
+// write directly to the output.
+class CompleteClusterOutput
 {
-  NodeRange left{node.offset, split.position, node.segment};
-  NodeRange right{node.offset + split.position, node.count - split.position, node.segment};
-  addChildNode<ThreadSafe>(input, errorFlags, split.leftComplete, left, outNodes, outNodesAlloc, clusters, results);
-  addChildNode<ThreadSafe>(input, errorFlags, split.rightComplete, right, outNodes, outNodesAlloc, clusters, results);
-}
+public:
+  CompleteClusterOutput(const Input& input_, const OutputClusters& outputClusters_)
+      : input(input_)
+      , outputClusters(outputClusters_)
+      , resultClusters(outputClusters.clusterItemRanges)
+  {
+    if(input.segments.size() > 1)
+    {
+      resultClusterStorage.resize(outputClusters.clusterItemRanges.size());
+      resultSegments.resize(outputClusters.clusterItemRanges.size());
+      resultClusters = resultClusterStorage;
+    }
+
+    // Initialize the output size. This grows with each call to push().
+    outputClusters.clusterCount = 0u;
+
+    // The itemCount must always match the input since the algorithm does not
+    // move unreferenced items.
+    outputClusters.itemCount = uint32_t(input.boundingBoxes.size());
+  }
+
+  ~CompleteClusterOutput() { packResults(); }
+
+  template <bool ThreadSafe>
+  void push(const NodeRange& newNode)
+  {
+    assert(newNode.count > 0);
+    // Append the node as a cluster
+    if constexpr(ThreadSafe)
+    {
+      uint32_t index = std::atomic_ref(outputClusters.clusterCount)++;
+      assert(size_t(index) < resultClusters.size());
+      resultClusters[index] = newNode;
+      if(!resultSegments.empty())  // don't write segments if there is only one
+        resultSegments[index] = newNode.segment;
+    }
+    else
+    {
+      assert(outputClusters.clusterCount < resultClusters.size());
+      resultClusters[outputClusters.clusterCount] = newNode;
+      if(!resultSegments.empty())  // don't write segments if there is only one
+        resultSegments[outputClusters.clusterCount] = newNode.segment;
+      outputClusters.clusterCount++;
+    }
+    if(newNode.count < input.config.minClusterSize)
+      clusterUnderflowCount++;
+  }
+
+  uint32_t getClusterUnderflowCount() const { return clusterUnderflowCount.load(); }
+
+private:
+  void packResults()
+  {
+    // Group clusters by segment and write segments
+    if(input.segments.empty())
+    {
+      assert(resultClusterStorage.empty() && resultSegments.empty());
+    }
+    else if(input.segments.size() == 1)
+    {
+      // Fast path for a single segment, clusters have already been written to the
+      // output (redirected by std::span resultClusters). Just need to write the
+      // single segment containing all clusters.
+      outputClusters.segments[0] = {0, outputClusters.clusterCount};
+      assert(resultClusterStorage.empty() && resultSegments.empty());
+    }
+    else
+    {
+      // Count output clusters per segment
+      std::ranges::fill(outputClusters.segments, Range{0, 0});
+      for(uint32_t i = 0; i < outputClusters.clusterCount; i++)
+      {
+        outputClusters.segments[resultSegments[i]].count++;
+      }
+
+      // Prefix sum segment counts into offsets
+      for(uint32_t i = 1; i < input.segments.size(); i++)
+      {
+        outputClusters.segments[i].offset = outputClusters.segments[i - 1].offset + outputClusters.segments[i - 1].count;
+      }
+
+      // Zero segment counts
+      for(uint32_t i = 0; i < input.segments.size(); i++)
+      {
+        outputClusters.segments[i].count = 0;
+      }
+
+      // Write output clusters
+      for(uint32_t i = 0; i < outputClusters.clusterCount; i++)
+      {
+        auto& segment                                                = outputClusters.segments[resultSegments[i]];
+        outputClusters.clusterItemRanges[segment.offset + segment.count++] = resultClusters[i];
+        assert(resultClusters[i].count > 0);
+      }
+    }
+  }
+
+  const Input&          input;
+  const OutputClusters& outputClusters;
+
+  std::atomic<uint32_t> clusterUnderflowCount = 0;
+
+  std::vector<Range> resultClusterStorage;
+
+  // Either OutputClusters::clusterItemRanges or resultClusters
+  std::vector<uint32_t> resultSegments;
+
+  // Empty or resultSegments, if there are multiple segments
+  std::span<Range> resultClusters;
+};
+
+// Temporary object to emit child nodes to the next batch or as final clusters
+struct NodeOutput
+{
+  NextNodeBatch          nextBatch;
+  CompleteClusterOutput& complete;
+
+  // Process two nodes from a split node. Both are either added to the next batch
+  // for processing or emitted as clusters if complete.
+  template <bool ThreadSafe>
+  void emitSplit(const NodeRange& node, const Split& split)
+  {
+    NodeRange left{node.offset, split.position, node.segment};
+    if(split.leftComplete)
+      complete.push<ThreadSafe>(left);
+    else
+      nextBatch.push<ThreadSafe>(left);
+
+    NodeRange right{node.offset + split.position, node.count - split.position, node.segment};
+    if(split.rightComplete)
+      complete.push<ThreadSafe>(right);
+    else
+      nextBatch.push<ThreadSafe>(right);
+  }
+};
 
 // Starting from a set of spatial items defined by their bounding boxes and
 // centroids, and an optional adjacency graph describing the connectivity
@@ -867,21 +955,18 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
 {
   Stopwatch swClusterize("clusterize");
 
+  assert(input.boundingBoxes.size() == input.centroids.size());  // already implied by the C API
   if(input.config.minClusterSize == 0 || input.config.maxClusterSize == 0 || input.config.minClusterSize > input.config.maxClusterSize)
   {
     return nvcluster_Result::NVCLUSTER_ERROR_INVALID_CONFIG_CLUSTER_SIZES;
   }
-  if(!input.boundingBoxes.data() || !input.boundingBoxes.size())
-  {
-    return nvcluster_Result::NVCLUSTER_ERROR_MISSING_SPATIAL_BOUNDING_BOXES;
-  }
-  if(!input.centroids.data() || !input.centroids.size())
-  {
-    return nvcluster_Result::NVCLUSTER_ERROR_MISSING_SPATIAL_CENTROIDS;
-  }
   if(input.boundingBoxes.size() != clusters.items.size())
   {
     return nvcluster_Result::NVCLUSTER_ERROR_INVALID_OUTPUT_ITEM_INDICES_SIZE;
+  }
+  if(input.segments.size() != clusters.segments.size())
+  {
+    return nvcluster_Result::NVCLUSTER_ERROR_SEGMENT_COUNT_MISMATCH;
   }
   if constexpr(HasConnectionWeights || HasVertexLimit)
   {
@@ -901,19 +986,14 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
 
   uint32_t itemCount = uint32_t(input.boundingBoxes.size());
 
-  // Early out if there are no items to cluster. This can happen using the segmented clustering
-  // FIXME: why is that?
-  if(itemCount == 0)
+  // Wrap the output to handle multiple segments with variable-size clusters
+  CompleteClusterOutput completeNodeOutput{input, clusters};
+
+  // Early out if there are no items to cluster
+  if(itemCount == 0 || input.segments.empty())
   {
     return nvcluster_Result::NVCLUSTER_SUCCESS;
   }
-
-  // Initialize the output sizes: at the beginning no cluster has been created
-  clusters.clusterCount = 0;
-
-  // We already know the list of all the items referenced by the clusters has the same size
-  // as the list of input spatial items since each of them will be referenced by exactly one cluster
-  clusters.itemCount = itemCount;
 
   // Temporary data
   // Used to mark the items as belonging to the left (1) or right (0) side of the split
@@ -935,10 +1015,6 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
   std::vector<uint32_t> connectionItemsInNodes[3];
   // Scatter/gather temporary data for buildAdjacencyInSortedList()
   std::vector<uint32_t> itemIndexToNodesIndex[3];
-
-  // Segments will produce variable-size clusters. Cluster are first written
-  // here in arbitrary order, then written to the output in segment order.
-  std::vector<NodeRange> results(clusters.clusterItemRanges.size());
 
   // The kD-tree will split the array of spatial items recursively along the X, Y and Z axes. In order to
   // run the splitting algorithm we first need to sort the input spatial items along each of those axis,
@@ -996,8 +1072,6 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
     }
   }
 
-  ErrorFlags errorFlags;
-
   // Create an argument pack of all temporary data allocated above. This is
   // split into subranges for nodes as they are created and split. Most notably,
   // it allows convenient temporary data reuse.
@@ -1013,7 +1087,6 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
       .rightUniqueVertices    = rightUniqueVertices,
       .tmpUniqueVertices      = tmpUniqueVertices,
       .connectionItemsInNodes = {connectionItemsInNodes[0], connectionItemsInNodes[1], connectionItemsInNodes[2]},
-      .errorFlags             = errorFlags,
   };
 
   // BVH style recursive bisection. Split nodes recursively until they have the
@@ -1079,10 +1152,8 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
                               || !vertexCountOverflows<0 /* axis zero */>(
                                   input, intermediates.subspan<false /* weights not used */, true /* vertex limit */>(node))))
                        {
-                         assert(node.count > 0);
-                         results[clusters.clusterCount++] = node;
-                         if(node.count < input.config.minClusterSize)
-                           errorFlags.underflowItemCount++;
+                         if(node.count > 0u)
+                           completeNodeOutput.push<false>(node);
                          return true;
                        }
                        return false;
@@ -1107,22 +1178,30 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
 
     uint32_t nodesNextAlloc = 0;
     nodeItemRangesNext.resize(nodeItemRangesNext.capacity());  // conservative over-allocation
+    NodeOutput nodeOutput{NextNodeBatch{nodeItemRangesNext, nodesNextAlloc}, completeNodeOutput};
 
     // Process all nodes in the current level. If there are a small number of
     // large nodes, parallelize internally, otherwise parallelize externally.
-    size_t nodeCountThreshold = nodeItemRangesCurrent[0].count > 100000 ? std::thread::hardware_concurrency() :
-                                                                          std::thread::hardware_concurrency() / 4;
-    // Add an exception for small nodes as high thread counts can throw this
-    // off. MSVC parallel execution doesn't perform well with small batches.
-    bool parallelizeInternally = nodeItemRangesCurrent[0].count > 4096 && nodeItemRangesCurrent.size() < nodeCountThreshold;
+    // TODO: tune for systems with high thread counts
+    size_t nodeCountThreshold =
+        std::max(1u, nodeItemRangesCurrent[0].count > 100000 ? std::thread::hardware_concurrency() :
+                                                               std::thread::hardware_concurrency() / 4u);
+
+    // Add an exception for small nodes if compiled with MSVC, where parallel
+    // execution doesn't perform well with small batches.
+    #if _MSC_VER
+    if (nodeItemRangesCurrent[0].count < 4096)
+        nodeCountThreshold = 0;
+    #endif
+
+    bool parallelizeInternally = nodeItemRangesCurrent.size() <= nodeCountThreshold;
     if(!Parallelize || parallelizeInternally)
     {
       for(const NodeRange& node : nodeItemRangesCurrent)
       {
         Split split = splitNode<Parallelize, HasConnectionWeights, HasVertexLimit>(
             input, intermediates.subspan<HasConnectionWeights, HasVertexLimit>(node));
-        addChildNodes<false /* no thread safety needed */>(input, errorFlags, node, split, nodeItemRangesNext,
-                                                           nodesNextAlloc, clusters, results);
+        nodeOutput.emitSplit<false /* no thread safety needed */>(node, split);
       }
     }
     else
@@ -1131,7 +1210,7 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
         const NodeRange& node  = nodeItemRangesCurrent[i];
         Split            split = splitNode<false /* not parallel */, HasConnectionWeights, HasVertexLimit>(
             input, intermediates.subspan<HasConnectionWeights, HasVertexLimit>(node));
-        addChildNodes<true /* thread safe */>(input, errorFlags, node, split, nodeItemRangesNext, nodesNextAlloc, clusters, results);
+        nodeOutput.emitSplit<true /* thread safe */>(node, split);
       });
     }
 
@@ -1144,64 +1223,14 @@ nvcluster_Result clusterize(const Input& input, const OutputClusters& clusters)
     std::swap(nodeItemRangesNext, nodeItemRangesCurrent);
   }
 
-  if(errorFlags.emptyNode)
-  {
-    return nvcluster_Result::NVCLUSTER_ERROR_INTERNAL_EMPTY_NODE;
-  }
-
   // It is possible to have less than the minimum number of items per cluster,
   // but there should be at most one, unless pre-splitting or the vertex limit
   // is used.
   uint32_t allowedUnderflow = input.config.preSplitThreshold == 0 ? 1 : div_ceil(itemCount, sanitizedPreSplitThreshold);
-  if(!HasVertexLimit && errorFlags.underflowItemCount > allowedUnderflow)
+  if(!HasVertexLimit && completeNodeOutput.getClusterUnderflowCount() > allowedUnderflow)
   {
     return nvcluster_Result::NVCLUSTER_ERROR_INTERNAL_MULTIPLE_UNDERFLOW;
   }
-
-  assert(clusters.clusterCount > 0);  // already returned if empty
-
-  if(input.segments.size() == 1)
-  {
-    // Fast path for a single segment, writing cluster items directly
-    // TOOD: ideally results would be written directly without copying
-    for(uint32_t i = 0; i < clusters.clusterCount; i++)
-    {
-      clusters.clusterItemRanges[i] = results[i];  // NodeRange to Range
-      assert(results[i].count > 0);
-    }
-    clusters.segments[0] = {0, clusters.clusterCount};
-  }
-  else
-  {
-    // Count output clusters per segment
-    // TODO: parallelize all this?
-    std::ranges::fill(clusters.segments, Range{0, 0});
-    for(uint32_t i = 0; i < clusters.clusterCount; i++)
-    {
-      clusters.segments[results[i].segment].count++;
-    }
-
-    // Prefix sum segment counts into offsets
-    for(uint32_t i = 1; i < input.segments.size(); i++)
-    {
-      clusters.segments[i].offset = clusters.segments[i - 1].offset + clusters.segments[i - 1].count;
-    }
-
-    // Zero segment counts
-    for(uint32_t i = 0; i < input.segments.size(); i++)
-    {
-      clusters.segments[i].count = 0;
-    }
-
-    // Write output clusters
-    for(uint32_t i = 0; i < clusters.clusterCount; i++)
-    {
-      auto& segment                                                = clusters.segments[results[i].segment];
-      clusters.clusterItemRanges[segment.offset + segment.count++] = results[i];
-      assert(results[i].count > 0);
-    }
-  }
-
   return nvcluster_Result::NVCLUSTER_SUCCESS;
 }
 
