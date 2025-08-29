@@ -21,7 +21,7 @@
 #include <execution>
 
 // Workaround for libc++ std::execution
-#include <parallel_execution_libcxx.hpp>
+#include "parallel_execution_libcxx.hpp"
 
 // Shortcut to select the parallel execution model depending on a bool, using
 // variable template specialization
