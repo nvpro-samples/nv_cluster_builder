@@ -21,7 +21,7 @@
 #include <execution>
 
 // Workaround for libc++ std::execution
-#include <parallel_execution_libcxx.hpp>
+#include <nvcluster/util/parallel_execution_libcxx.hpp>
 
 // Shortcut to select the parallel execution model depending on a bool, using
 // variable template specialization
@@ -88,13 +88,13 @@ struct iota_iterator
     i = static_cast<T>(static_cast<difference_type>(i) - d);
     return *this;
   }
-  bool                 operator==(const iota_iterator& other) const { return i == other.i; }
-  bool                 operator!=(const iota_iterator& other) const { return i != other.i; }
-  bool                 operator<(const iota_iterator& other) const { return i < other.i; }
-  bool                 operator<=(const iota_iterator& other) const { return i <= other.i; }
-  bool                 operator>(const iota_iterator& other) const { return i > other.i; }
-  bool                 operator>=(const iota_iterator& other) const { return i >= other.i; }
-  difference_type      operator-(const iota_iterator& other) const
+  bool            operator==(const iota_iterator& other) const { return i == other.i; }
+  bool            operator!=(const iota_iterator& other) const { return i != other.i; }
+  bool            operator<(const iota_iterator& other) const { return i < other.i; }
+  bool            operator<=(const iota_iterator& other) const { return i <= other.i; }
+  bool            operator>(const iota_iterator& other) const { return i > other.i; }
+  bool            operator>=(const iota_iterator& other) const { return i >= other.i; }
+  difference_type operator-(const iota_iterator& other) const
   {
     return static_cast<difference_type>(i) - static_cast<difference_type>(other.i);
   }

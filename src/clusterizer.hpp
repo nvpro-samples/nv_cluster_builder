@@ -18,9 +18,9 @@
  */
 #pragma once
 
-#include <clusters_cpp.hpp>
 #include <connections.hpp>
 #include <nvcluster/nvcluster.h>
+#include <nvcluster/util/objects.hpp>
 #include <span>
 
 namespace nvcluster {

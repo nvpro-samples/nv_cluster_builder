@@ -19,13 +19,13 @@
 #pragma once
 
 #include <algorithm>
-#include <clusterizer.hpp>   // internal, for unit testing
-#include <clusters_cpp.hpp>  // internal include from lib, for vec3 etc.
+#include <clusterizer.hpp>  // internal, for unit testing
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <numeric>
 #include <nvcluster/nvcluster_storage.hpp>
+#include <nvcluster/util/objects.hpp>  // for vec3 etc.
 #include <ostream>
 #include <ranges>
 #include <unordered_map>

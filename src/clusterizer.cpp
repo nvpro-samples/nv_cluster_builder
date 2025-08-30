@@ -24,7 +24,7 @@
 #include <clusterizer.hpp>
 #include <execution>
 #include <nvcluster/nvcluster.h>
-#include <parallel.hpp>
+#include <nvcluster/util/parallel.hpp>
 #include <ranges>
 #include <span>
 #include <stddef.h>
@@ -33,9 +33,6 @@
 #include <vector>
 
 #define PRINT_PERF 0
-
-// Workaround for libc++ std::execution
-#include <parallel_execution_libcxx.hpp>
 
 // Scoped profiler for quick and coarse results
 // https://stackoverflow.com/questions/31391914/timing-in-an-elegant-way-in-c

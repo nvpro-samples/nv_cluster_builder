@@ -20,13 +20,10 @@
 #include <atomic>
 #include <connections.hpp>
 #include <execution>
-#include <parallel.hpp>
+#include <nvcluster/util/parallel.hpp>
 #include <ranges>
 #include <unordered_map>
 #include <vector>
-
-// Workaround for libc++ std::execution
-#include <parallel_execution_libcxx.hpp>
 
 namespace nvcluster {
 

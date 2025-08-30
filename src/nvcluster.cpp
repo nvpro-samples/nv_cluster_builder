@@ -222,8 +222,9 @@ inline nvcluster_Result buildMaybeWithConnections(nvcluster_Context         cont
       .segmentCount      = 1,
   };
   nvcluster_Range outputSegmentIgnored;
-  if(segments == nullptr && segmentClusterRanges == nullptr)
+  if(segments == nullptr)
   {
+    assert(segmentClusterRanges == nullptr);
     segments             = &singleSegment;
     segmentClusterRanges = &outputSegmentIgnored;
   }

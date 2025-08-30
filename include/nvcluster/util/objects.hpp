@@ -83,6 +83,8 @@ struct vec : std::array<T, N> {
     [[nodiscard]] friend constexpr vec operator/(const vec& v, T s) { return vec(v) /= s; }
     [[nodiscard]] friend constexpr bool operator==(const vec& a, const vec& b) { return std::ranges::equal(a, b); }
     [[nodiscard]] friend constexpr bool operator!=(const vec& a, const vec& b) { return !(a == b); }
+
+    operator nvcluster_Vec3f() const requires (N == 3 && std::same_as<T, float>) { return {(*this)[0], (*this)[1], (*this)[2]}; }
 };
 template<class T, std::size_t N> [[nodiscard]] constexpr vec<T, N> min(const vec<T, N>& a, const vec<T, N>& b) { vec<T, N> r; for (std::size_t i = 0; i < N; ++i) r[i] = std::min(a[i], b[i]); return r; }
 template<class T, std::size_t N> [[nodiscard]] constexpr vec<T, N> max(const vec<T, N>& a, const vec<T, N>& b) { vec<T, N> r; for (std::size_t i = 0; i < N; ++i) r[i] = std::max(a[i], b[i]); return r; }
@@ -138,7 +140,7 @@ struct AABB
   {
     return {vec3f{std::numeric_limits<float>::max()}, vec3f{std::numeric_limits<float>::lowest()}};
   }
-  operator nvcluster_AABB() const { return reinterpret_cast<const nvcluster_AABB&>(*this); }
+  operator nvcluster_AABB() const { return {{min[0], min[1], min[2]}, {max[0], max[1], max[2]}}; }
 };
 static_assert(sizeof(nvcluster_AABB) == sizeof(AABB));
 

@@ -29,6 +29,7 @@ file(GLOB HEADERS_INTERNAL
 file(GLOB HEADERS_PUBLIC
   include/nvcluster/*.h
   include/nvcluster/*.hpp
+  include/nvcluster/util/*.hpp
 )
 
 source_group("public_include" FILES ${HEADERS_PUBLIC})

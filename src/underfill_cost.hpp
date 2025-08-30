@@ -22,7 +22,7 @@
 #pragma once
 
 #include <clusterizer.hpp>
-#include <clusters_cpp.hpp>
+#include <nvcluster/util/objects.hpp>
 
 namespace nvcluster {
 

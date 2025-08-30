@@ -19,8 +19,8 @@
 #pragma once
 
 #include <algorithm>
-#include <clusters_cpp.hpp>
 #include <inttypes.h>
+#include <nvcluster/util/objects.hpp>
 #include <span>
 #include <unordered_map>
 #include <vector>
